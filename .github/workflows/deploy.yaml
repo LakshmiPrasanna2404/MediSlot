@@ -1,5 +1,5 @@
 
-name: MediSlot Network Stack Deployment
+name: MediSlot CloudFormation Deployment
 
 on:
   workflow_dispatch:
@@ -10,11 +10,11 @@ permissions:
 
 env:
   AWS_REGION: us-east-1
-  STACK_NAME: medislot-dev-network
+  ENVIRONMENT: dev
 
 jobs:
-  deploy-network:
-    name: Validate and Deploy Network Stack
+  deploy:
+    name: Validate and Deploy MediSlot
     runs-on: ubuntu-latest
 
     steps:
@@ -28,46 +28,101 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Verify AWS identity
-        run: |
-          aws sts get-caller-identity
+        run: aws sts get-caller-identity
 
-      - name: Validate network template
+      # Validate every template before deploying any stack.
+      - name: Validate all CloudFormation templates
+        shell: bash
         run: |
-          aws cloudformation validate-template \
-            --template-body file://infrastructure/network-stack.yaml \
-            --region "$AWS_REGION"
+          set -euo pipefail
 
-      - name: Check existing network stack
-        run: |
-          aws cloudformation describe-stacks \
-            --stack-name "$STACK_NAME" \
-            --region "$AWS_REGION" \
-            --query 'Stacks[0].StackStatus' \
-            --output text || true
+          for template in \
+            infrastructure/network-stack.yaml \
+            infrastructure/data-stack.yaml \
+            infrastructure/iam-stack.yaml \
+            infrastructure/auth-stack.yaml \
+            infrastructure/app-stack.yaml
+          do
+            echo "Validating ${template}"
+
+            if [[ ! -s "$template" ]]; then
+              echo "::error::Missing or empty template: ${template}"
+              exit 1
+            fi
+
+            aws cloudformation validate-template \
+              --template-body "file://${template}" \
+              --region "$AWS_REGION"
+
+            echo "Validation passed: ${template}"
+          done
 
       - name: Deploy network stack
         run: |
           aws cloudformation deploy \
-            --stack-name "$STACK_NAME" \
+            --stack-name "medislot-${ENVIRONMENT}-network" \
             --template-file infrastructure/network-stack.yaml \
             --parameter-overrides \
-              Environment=dev \
+              Environment="${ENVIRONMENT}" \
               EnableInterfaceEndpoints=false \
             --no-fail-on-empty-changeset \
             --region "$AWS_REGION"
 
-      - name: Verify deployment status
+      - name: Deploy data stack
         run: |
-          aws cloudformation describe-stacks \
-            --stack-name "$STACK_NAME" \
-            --region "$AWS_REGION" \
-            --query 'Stacks[0].[StackName,StackStatus]' \
-            --output table
+          aws cloudformation deploy \
+            --stack-name "medislot-${ENVIRONMENT}-data" \
+            --template-file infrastructure/data-stack.yaml \
+            --parameter-overrides \
+              Environment="${ENVIRONMENT}" \
+            --no-fail-on-empty-changeset \
+            --region "$AWS_REGION"
 
-      - name: Display network stack outputs
+      - name: Deploy IAM stack
         run: |
-          aws cloudformation describe-stacks \
-            --stack-name "$STACK_NAME" \
-            --region "$AWS_REGION" \
-            --query 'Stacks[0].Outputs[*].[OutputKey,OutputValue,ExportName]' \
-            --output table
+          aws cloudformation deploy \
+            --stack-name "medislot-${ENVIRONMENT}-iam" \
+            --template-file infrastructure/iam-stack.yaml \
+            --parameter-overrides \
+              Environment="${ENVIRONMENT}" \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset \
+            --region "$AWS_REGION"
+
+      - name: Deploy authentication stack
+        run: |
+          aws cloudformation deploy \
+            --stack-name "medislot-${ENVIRONMENT}-auth" \
+            --template-file infrastructure/auth-stack.yaml \
+            --parameter-overrides \
+              Environment="${ENVIRONMENT}" \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset \
+            --region "$AWS_REGION"
+
+      - name: Deploy application stack
+        run: |
+          aws cloudformation deploy \
+            --stack-name "medislot-${ENVIRONMENT}-app" \
+            --template-file infrastructure/app-stack.yaml \
+            --parameter-overrides \
+              Environment="${ENVIRONMENT}" \
+            --capabilities CAPABILITY_NAMED_IAM \
+            --no-fail-on-empty-changeset \
+            --region "$AWS_REGION"
+
+      - name: Verify deployed stacks
+        if: success()
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for stack in network data iam auth app; do
+            echo "Checking medislot-${ENVIRONMENT}-${stack}"
+
+            aws cloudformation describe-stacks \
+              --stack-name "medislot-${ENVIRONMENT}-${stack}" \
+              --region "$AWS_REGION" \
+              --query 'Stacks[0].[StackName,StackStatus]' \
+              --output table
+          done
