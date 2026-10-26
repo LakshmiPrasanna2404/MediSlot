@@ -86,7 +86,7 @@ jobs:
             stack-sources/data/infrastructure/data-stack.yaml \
             stack-sources/iam/infrastructure/iam-stack.yaml
 
-      - name: Diagnose CloudFormation YAML parsing
+      - name: Verify CloudFormation YAML structure
         shell: bash
         run: |
           set -euo pipefail
@@ -120,43 +120,29 @@ jobs:
               Path("stack-sources/iam/infrastructure/iam-stack.yaml"),
           ]
 
-          errors = []
-
           for path in templates:
-              print(f"\n=== Parsing {path} ===")
+              print(f"\nChecking {path}")
 
-              try:
-                  with path.open("r", encoding="utf-8-sig") as file:
-                      document = yaml.load(
-                          file, Loader=CloudFormationLoader
-                      )
+              with path.open("r", encoding="utf-8-sig") as file:
+                  document = yaml.load(
+                      file, Loader=CloudFormationLoader
+                  )
 
-                  if not isinstance(document, dict):
-                      raise ValueError(
-                          f"Expected mapping, got "
-                          f"{type(document).__name__}"
-                      )
+              if not isinstance(document, dict):
+                  raise ValueError(
+                      f"{path}: document root must be a mapping"
+                  )
 
-                  print("Top-level keys:", list(document.keys()))
-                  print("Resources exists:", "Resources" in document)
+              resources = document.get("Resources")
 
-                  if not isinstance(document.get("Resources"), dict):
-                      raise ValueError(
-                          "Resources must be a YAML mapping"
-                      )
+              if not isinstance(resources, dict):
+                  raise ValueError(
+                      f"{path}: Resources must be a mapping"
+                  )
 
-                  print("Resource count:", len(document["Resources"]))
-                  print("YAML parsing passed.")
-
-              except Exception as exc:
-                  errors.append(f"{path}: {exc}")
-                  print(f"ERROR: {path}: {exc}", file=sys.stderr)
-
-          if errors:
-              print("\nTemplate parsing failures:")
-              for error in errors:
-                  print(error)
-              sys.exit(1)
+              print("Top-level keys:", list(document.keys()))
+              print("Resource count:", len(resources))
+              print("YAML structure passed.")
           PY
 
       - name: Lint Network CloudFormation template
@@ -165,7 +151,7 @@ jobs:
           set -euo pipefail
           TEMPLATE="stack-sources/network/infrastructure/network-stack.yaml"
           echo "Linting Network: $TEMPLATE"
-          cfn-lint "$TEMPLATE"
+          cfn-lint --template "$TEMPLATE"
 
       - name: Lint Data CloudFormation template
         shell: bash
@@ -173,7 +159,7 @@ jobs:
           set -euo pipefail
           TEMPLATE="stack-sources/data/infrastructure/data-stack.yaml"
           echo "Linting Data: $TEMPLATE"
-          cfn-lint "$TEMPLATE"
+          cfn-lint --template "$TEMPLATE"
 
       - name: Diagnose and Lint IAM CloudFormation template
         shell: bash
@@ -182,67 +168,18 @@ jobs:
 
           TEMPLATE="stack-sources/iam/infrastructure/iam-stack.yaml"
 
-          echo "=== Verify actual template file ==="
+          echo "=== IAM template information ==="
           pwd
           realpath "$TEMPLATE"
           wc -c "$TEMPLATE"
           sha256sum "$TEMPLATE"
-
-          echo "=== IAM template first 20 lines ==="
           head -n 20 "$TEMPLATE"
-
-          echo "=== Verify YAML structure ==="
-          python - "$TEMPLATE" <<'PY'
-          import sys
-          import yaml
-
-          class CFNLoader(yaml.SafeLoader):
-              pass
-
-          def intrinsic(loader, suffix, node):
-              if isinstance(node, yaml.ScalarNode):
-                  return loader.construct_scalar(node)
-              if isinstance(node, yaml.SequenceNode):
-                  return loader.construct_sequence(node)
-              if isinstance(node, yaml.MappingNode):
-                  return loader.construct_mapping(node)
-              raise yaml.YAMLError(
-                  f"Unsupported intrinsic tag: !{suffix}"
-              )
-
-          CFNLoader.add_multi_constructor("!", intrinsic)
-
-          with open(sys.argv[1], encoding="utf-8-sig") as file:
-              data = yaml.load(file, Loader=CFNLoader)
-
-          print("Root type:", type(data).__name__)
-          print(
-              "Root keys:",
-              list(data) if isinstance(data, dict) else None
-          )
-          print(
-              "Resources type:",
-              type(data.get("Resources")).__name__
-              if isinstance(data, dict)
-              else "No root mapping"
-          )
-
-          if not isinstance(data, dict):
-              raise SystemExit("ERROR: YAML root must be a mapping")
-
-          if not isinstance(data.get("Resources"), dict):
-              raise SystemExit(
-                  "ERROR: Resources must be a mapping"
-              )
-
-          print("YAML structure is valid.")
-          PY
 
           echo "=== cfn-lint version ==="
           cfn-lint --version
 
-          echo "=== cfn-lint IAM template ==="
-          cfn-lint --ignore-checks W3037 "$TEMPLATE"
+          echo "=== IAM lint using explicit template argument ==="
+          cfn-lint --template "$TEMPLATE" --ignore-checks W3037
 
       - name: Configure AWS credentials using OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -266,8 +203,7 @@ jobs:
             stack-sources/data/infrastructure/data-stack.yaml \
             stack-sources/iam/infrastructure/iam-stack.yaml
           do
-            echo "========================================"
-            echo "AWS validating: $template"
+            echo "Validating with AWS: $template"
 
             aws cloudformation validate-template \
               --template-body "file://${template}" \
