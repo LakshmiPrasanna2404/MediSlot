@@ -47,14 +47,16 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install linting tools
+      - name: Install validation tools
+        shell: bash
         run: |
+          set -euo pipefail
           python -m pip install --upgrade pip
-          python -m pip install --upgrade cfn-lint yamllint
+          python -m pip install cfn-lint yamllint PyYAML
           cfn-lint --version
           yamllint --version
 
-      - name: Check required templates
+      - name: Check template files
         shell: bash
         run: |
           set -euo pipefail
@@ -65,18 +67,16 @@ jobs:
             stack-sources/iam/infrastructure/iam-stack.yaml
           do
             if [[ ! -s "$template" ]]; then
-              echo "::error::Missing or empty template: $template"
+              echo "::error::Template missing or empty: $template"
               exit 1
             fi
 
-            echo "Found template: $template"
-            echo "File size: $(wc -c < "$template") bytes"
-            echo "First 10 lines:"
-            head -n 10 "$template"
-            echo "----------------------------------------"
+            echo "Found: $template"
+            wc -c "$template"
+            sha256sum "$template"
           done
 
-      - name: Lint YAML files
+      - name: Lint YAML formatting
         shell: bash
         run: |
           set -euo pipefail
@@ -86,13 +86,85 @@ jobs:
             stack-sources/data/infrastructure/data-stack.yaml \
             stack-sources/iam/infrastructure/iam-stack.yaml
 
+      - name: Diagnose CloudFormation YAML parsing
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          python - <<'PY'
+          import sys
+          from pathlib import Path
+          import yaml
+          from yaml.nodes import ScalarNode, SequenceNode, MappingNode
+
+          class CloudFormationLoader(yaml.SafeLoader):
+              pass
+
+          def construct_intrinsic(loader, tag_suffix, node):
+              if isinstance(node, ScalarNode):
+                  return loader.construct_scalar(node)
+              if isinstance(node, SequenceNode):
+                  return loader.construct_sequence(node)
+              if isinstance(node, MappingNode):
+                  return loader.construct_mapping(node)
+              raise yaml.YAMLError(f"Unsupported node for !{tag_suffix}")
+
+          CloudFormationLoader.add_multi_constructor(
+              "!", construct_intrinsic
+          )
+
+          templates = [
+              Path("stack-sources/network/infrastructure/network-stack.yaml"),
+              Path("stack-sources/data/infrastructure/data-stack.yaml"),
+              Path("stack-sources/iam/infrastructure/iam-stack.yaml"),
+          ]
+
+          failed = False
+
+          for path in templates:
+              print(f"\n=== Parsing {path} ===")
+
+              try:
+                  content = path.read_text(encoding="utf-8-sig")
+                  document = yaml.load(
+                      content,
+                      Loader=CloudFormationLoader
+                  )
+
+                  if not isinstance(document, dict):
+                      raise ValueError(
+                          f"Expected a YAML mapping, got "
+                          f"{type(document).__name__}"
+                      )
+
+                  print("Top-level keys:", list(document.keys()))
+                  print("Has Resources:", "Resources" in document)
+
+                  if not isinstance(document.get("Resources"), dict):
+                      raise ValueError(
+                          "Resources must be a YAML mapping"
+                      )
+
+                  print(
+                      "Resource logical IDs:",
+                      len(document["Resources"])
+                  )
+                  print("YAML parsing passed.")
+
+              except Exception as exc:
+                  failed = True
+                  print(f"ERROR in {path}: {exc}", file=sys.stderr)
+
+          if failed:
+              sys.exit(1)
+          PY
+
       - name: Lint Network CloudFormation template
         shell: bash
         run: |
           set -euo pipefail
           TEMPLATE="stack-sources/network/infrastructure/network-stack.yaml"
-
-          echo "Linting: $TEMPLATE"
+          echo "Linting Network: $TEMPLATE"
           cfn-lint "$TEMPLATE"
 
       - name: Lint Data CloudFormation template
@@ -100,17 +172,24 @@ jobs:
         run: |
           set -euo pipefail
           TEMPLATE="stack-sources/data/infrastructure/data-stack.yaml"
-
-          echo "Linting: $TEMPLATE"
+          echo "Linting Data: $TEMPLATE"
           cfn-lint "$TEMPLATE"
 
-      - name: Lint IAM CloudFormation template
+      - name: Diagnose and Lint IAM CloudFormation template
         shell: bash
         run: |
           set -euo pipefail
+
           TEMPLATE="stack-sources/iam/infrastructure/iam-stack.yaml"
 
-          echo "Linting: $TEMPLATE"
+          echo "=== IAM template metadata ==="
+          ls -l "$TEMPLATE"
+          file "$TEMPLATE"
+          wc -c "$TEMPLATE"
+          sha256sum "$TEMPLATE"
+          head -n 20 "$TEMPLATE"
+
+          echo "=== IAM CloudFormation lint ==="
           cfn-lint --ignore-checks W3037 "$TEMPLATE"
 
       - name: Configure AWS credentials using OIDC
@@ -120,9 +199,12 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Verify AWS identity
-        run: aws sts get-caller-identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity
 
-      - name: Validate CloudFormation templates
+      - name: Validate CloudFormation templates with AWS
         shell: bash
         run: |
           set -euo pipefail
@@ -133,13 +215,13 @@ jobs:
             stack-sources/iam/infrastructure/iam-stack.yaml
           do
             echo "========================================"
-            echo "Validating CloudFormation: $template"
+            echo "AWS validating: $template"
 
             aws cloudformation validate-template \
               --template-body "file://${template}" \
               --region "$AWS_REGION"
 
-            echo "Validation passed: $template"
+            echo "AWS validation passed: $template"
           done
 
   deploy-network:
