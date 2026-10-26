@@ -30,7 +30,6 @@ jobs:
       - name: Verify AWS identity
         run: aws sts get-caller-identity
 
-      # Validate every template before deploying any stack.
       - name: Validate all CloudFormation templates
         shell: bash
         run: |
@@ -118,11 +117,21 @@ jobs:
           set -euo pipefail
 
           for stack in network data iam auth app; do
-            echo "Checking medislot-${ENVIRONMENT}-${stack}"
+            stack_name="medislot-${ENVIRONMENT}-${stack}"
 
-            aws cloudformation describe-stacks \
-              --stack-name "medislot-${ENVIRONMENT}-${stack}" \
+            status=$(aws cloudformation describe-stacks \
+              --stack-name "$stack_name" \
               --region "$AWS_REGION" \
-              --query 'Stacks[0].[StackName,StackStatus]' \
-              --output table
+              --query 'Stacks[0].StackStatus' \
+              --output text)
+
+            echo "${stack_name}: ${status}"
+
+            if [[ "$status" != "CREATE_COMPLETE" && \
+                  "$status" != "UPDATE_COMPLETE" ]]; then
+              echo "::error::Unexpected status for ${stack_name}: ${status}"
+              exit 1
+            fi
           done
+
+          echo "All MediSlot stacks deployed successfully."
