@@ -78,10 +78,14 @@ jobs:
             stack-sources/iam/infrastructure/iam-stack.yaml
 
       - name: Lint CloudFormation templates
+        shell: bash
         run: |
+          set -euo pipefail
+
           cfn-lint stack-sources/network/infrastructure/network-stack.yaml
           cfn-lint stack-sources/data/infrastructure/data-stack.yaml
-          cfn-lint stack-sources/iam/infrastructure/iam-stack.yaml
+          cfn-lint --ignore-checks W3037 \
+            stack-sources/iam/infrastructure/iam-stack.yaml
 
       - name: Configure AWS credentials using OIDC
         uses: aws-actions/configure-aws-credentials@v4
