@@ -1,0 +1,388 @@
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  MediSlot data layer: private encrypted MySQL database,
+  DynamoDB state tables, and private S3 storage for profile files.
+
+Parameters:
+  Environment:
+    Type: String
+    Description: Deployment environment
+    Default: dev
+    AllowedValues:
+      - dev
+      - test
+      - prod
+
+  DBInstanceClass:
+    Type: String
+    Description: RDS instance class; confirm regional availability before deployment
+    Default: db.t3.micro
+    AllowedValues:
+      - db.t3.micro
+      - db.t3.small
+      - db.t3.medium
+
+  DBAllocatedStorage:
+    Type: Number
+    Description: Initial RDS storage in GiB
+    Default: 20
+    MinValue: 20
+    MaxValue: 100
+
+Conditions:
+  IsProd: !Equals [!Ref Environment, prod]
+
+Resources:
+  # ---------------------------------------------------------
+  # RDS: relational system of record
+  # ---------------------------------------------------------
+
+  MediSlotDBSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: !Sub 'MediSlot ${Environment} private database subnets'
+      SubnetIds:
+        - Fn::ImportValue:
+            Fn::Sub: 'medislot-${Environment}-rds-subnet-az1-id'
+        - Fn::ImportValue:
+            Fn::Sub: 'medislot-${Environment}-rds-subnet-az2-id'
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  MediSlotMySQL:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub 'medislot-${Environment}-mysql'
+      Engine: mysql
+      EngineVersion: '8.0'
+      DBInstanceClass: !Ref DBInstanceClass
+      DBName: medislot
+      MasterUsername: medislotadmin
+      ManageMasterUserPassword: true
+      AllocatedStorage: !Ref DBAllocatedStorage
+      MaxAllocatedStorage: 100
+      StorageType: gp3
+      StorageEncrypted: true
+      PubliclyAccessible: false
+      MultiAZ: !If [IsProd, true, false]
+      BackupRetentionPeriod: !If [IsProd, 7, 1]
+      DeletionProtection: !If [IsProd, true, false]
+      AutoMinorVersionUpgrade: true
+      CopyTagsToSnapshot: true
+      DBSubnetGroupName: !Ref MediSlotDBSubnetGroup
+      VPCSecurityGroups:
+        - Fn::ImportValue:
+            Fn::Sub: 'medislot-${Environment}-rds-sg-id'
+      Tags:
+        - Key: Name
+          Value: !Sub 'medislot-${Environment}-mysql'
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ---------------------------------------------------------
+  # DynamoDB: slot capacity and temporary reservation state
+  # slotId + recordId allow capacity and hold records per slot.
+  # Application code must use this exact key contract.
+  # ---------------------------------------------------------
+
+  SlotReservationsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub 'medislot-${Environment}-slot-reservations'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: slotId
+          AttributeType: S
+        - AttributeName: recordId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: slotId
+          KeyType: HASH
+        - AttributeName: recordId
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ---------------------------------------------------------
+  # DynamoDB: waitlist offers
+  # ---------------------------------------------------------
+
+  WaitlistOffersTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub 'medislot-${Environment}-waitlist-offers'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: slotId
+          AttributeType: S
+        - AttributeName: offerId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: slotId
+          KeyType: HASH
+        - AttributeName: offerId
+          KeyType: RANGE
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ---------------------------------------------------------
+  # DynamoDB: JWT revocation denylist
+  # ---------------------------------------------------------
+
+  TokenRevocationsTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub 'medislot-${Environment}-token-revocations'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: jti
+          AttributeType: S
+      KeySchema:
+        - AttributeName: jti
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ---------------------------------------------------------
+  # DynamoDB: idempotency keys for safe retry handling
+  # ---------------------------------------------------------
+
+  IdempotencyTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub 'medislot-${Environment}-idempotency'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: idempotencyKey
+          AttributeType: S
+      KeySchema:
+        - AttributeName: idempotencyKey
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ---------------------------------------------------------
+  # DynamoDB: notification dispatch/deduplication state
+  # ---------------------------------------------------------
+
+  NotificationDispatchTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub 'medislot-${Environment}-notification-dispatch'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: dispatchId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: dispatchId
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ---------------------------------------------------------
+  # S3: private doctor profile files
+  # No prescription-document storage is included.
+  # ---------------------------------------------------------
+
+  DoctorProfileFilesBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub 'medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-doctor-files'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  DoctorProfileFilesBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref DoctorProfileFilesBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: s3:*
+            Resource:
+              - !GetAtt DoctorProfileFilesBucket.Arn
+              - !Sub '${DoctorProfileFilesBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+Outputs:
+  DBInstanceIdentifier:
+    Description: RDS instance identifier
+    Value: !Ref MediSlotMySQL
+    Export:
+      Name: !Sub 'medislot-${Environment}-db-instance-id'
+
+  DBEndpointAddress:
+    Description: Private RDS endpoint address
+    Value: !GetAtt MediSlotMySQL.Endpoint.Address
+    Export:
+      Name: !Sub 'medislot-${Environment}-db-endpoint'
+
+  DBEndpointPort:
+    Description: RDS MySQL port
+    Value: !GetAtt MediSlotMySQL.Endpoint.Port
+    Export:
+      Name: !Sub 'medislot-${Environment}-db-port'
+
+  DBName:
+    Description: Application database name
+    Value: medislot
+    Export:
+      Name: !Sub 'medislot-${Environment}-db-name'
+
+  DBMasterSecretArn:
+    Description: ARN of the RDS-managed master credentials secret
+    Value: !GetAtt MediSlotMySQL.MasterUserSecret.SecretArn
+    Export:
+      Name: !Sub 'medislot-${Environment}-db-master-secret-arn'
+
+  SlotReservationsTableName:
+    Value: !Ref SlotReservationsTable
+    Export:
+      Name: !Sub 'medislot-${Environment}-slot-reservations-table-name'
+
+  SlotReservationsTableArn:
+    Value: !GetAtt SlotReservationsTable.Arn
+    Export:
+      Name: !Sub 'medislot-${Environment}-slot-reservations-table-arn'
+
+  WaitlistOffersTableName:
+    Value: !Ref WaitlistOffersTable
+    Export:
+      Name: !Sub 'medislot-${Environment}-waitlist-offers-table-name'
+
+  WaitlistOffersTableArn:
+    Value: !GetAtt WaitlistOffersTable.Arn
+    Export:
+      Name: !Sub 'medislot-${Environment}-waitlist-offers-table-arn'
+
+  TokenRevocationsTableName:
+    Value: !Ref TokenRevocationsTable
+    Export:
+      Name: !Sub 'medislot-${Environment}-token-revocations-table-name'
+
+  TokenRevocationsTableArn:
+    Value: !GetAtt TokenRevocationsTable.Arn
+    Export:
+      Name: !Sub 'medislot-${Environment}-token-revocations-table-arn'
+
+  IdempotencyTableName:
+    Value: !Ref IdempotencyTable
+    Export:
+      Name: !Sub 'medislot-${Environment}-idempotency-table-name'
+
+  IdempotencyTableArn:
+    Value: !GetAtt IdempotencyTable.Arn
+    Export:
+      Name: !Sub 'medislot-${Environment}-idempotency-table-arn'
+
+  NotificationDispatchTableName:
+    Value: !Ref NotificationDispatchTable
+    Export:
+      Name: !Sub 'medislot-${Environment}-notification-dispatch-table-name'
+
+  NotificationDispatchTableArn:
+    Value: !GetAtt NotificationDispatchTable.Arn
+    Export:
+      Name: !Sub 'medislot-${Environment}-notification-dispatch-table-arn'
+
+  DoctorProfileFilesBucketName:
+    Value: !Ref DoctorProfileFilesBucket
+    Export:
+      Name: !Sub 'medislot-${Environment}-doctor-files-bucket-name'
+
+  DoctorProfileFilesBucketArn:
+    Value: !GetAtt DoctorProfileFilesBucket.Arn
+    Export:
+      Name: !Sub 'medislot-${Environment}-doctor-files-bucket-arn'
