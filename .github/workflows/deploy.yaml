@@ -67,11 +67,14 @@ jobs:
               echo "::error::Missing or empty template: $template"
               exit 1
             fi
+            echo "Found template: $template"
           done
 
       - name: Lint YAML files
+        shell: bash
         run: |
-          yamllint -d relaxed .github/workflows/deploy.yaml
+          set -euo pipefail
+
           yamllint -d relaxed \
             stack-sources/network/infrastructure/network-stack.yaml \
             stack-sources/data/infrastructure/data-stack.yaml \
