@@ -1,0 +1,73 @@
+
+name: MediSlot Network Stack Deployment
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  AWS_REGION: us-east-1
+  STACK_NAME: medislot-dev-network
+
+jobs:
+  deploy-network:
+    name: Validate and Deploy Network Stack
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials using OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::393476285814:role/medislot-github-actions-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Verify AWS identity
+        run: |
+          aws sts get-caller-identity
+
+      - name: Validate network template
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://infrastructure/network-stack.yaml \
+            --region "$AWS_REGION"
+
+      - name: Check existing network stack
+        run: |
+          aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].StackStatus' \
+            --output text || true
+
+      - name: Deploy network stack
+        run: |
+          aws cloudformation deploy \
+            --stack-name "$STACK_NAME" \
+            --template-file infrastructure/network-stack.yaml \
+            --parameter-overrides \
+              Environment=dev \
+              EnableInterfaceEndpoints=false \
+            --no-fail-on-empty-changeset \
+            --region "$AWS_REGION"
+
+      - name: Verify deployment status
+        run: |
+          aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].[StackName,StackStatus]' \
+            --output table
+
+      - name: Display network stack outputs
+        run: |
+          aws cloudformation describe-stacks \
+            --stack-name "$STACK_NAME" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].Outputs[*].[OutputKey,OutputValue,ExportName]' \
+            --output table
