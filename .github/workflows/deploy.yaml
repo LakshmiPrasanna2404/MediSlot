@@ -1,3 +1,4 @@
+
 name: MediSlot CloudFormation CI/CD Pipeline
 
 on:
@@ -67,7 +68,12 @@ jobs:
               echo "::error::Missing or empty template: $template"
               exit 1
             fi
+
             echo "Found template: $template"
+            echo "File size: $(wc -c < "$template") bytes"
+            echo "First 10 lines:"
+            head -n 10 "$template"
+            echo "----------------------------------------"
           done
 
       - name: Lint YAML files
@@ -80,15 +86,32 @@ jobs:
             stack-sources/data/infrastructure/data-stack.yaml \
             stack-sources/iam/infrastructure/iam-stack.yaml
 
-      - name: Lint CloudFormation templates
+      - name: Lint Network CloudFormation template
         shell: bash
         run: |
           set -euo pipefail
+          TEMPLATE="stack-sources/network/infrastructure/network-stack.yaml"
 
-          cfn-lint stack-sources/network/infrastructure/network-stack.yaml
-          cfn-lint stack-sources/data/infrastructure/data-stack.yaml
-          cfn-lint --ignore-checks W3037 \
-            stack-sources/iam/infrastructure/iam-stack.yaml
+          echo "Linting: $TEMPLATE"
+          cfn-lint "$TEMPLATE"
+
+      - name: Lint Data CloudFormation template
+        shell: bash
+        run: |
+          set -euo pipefail
+          TEMPLATE="stack-sources/data/infrastructure/data-stack.yaml"
+
+          echo "Linting: $TEMPLATE"
+          cfn-lint "$TEMPLATE"
+
+      - name: Lint IAM CloudFormation template
+        shell: bash
+        run: |
+          set -euo pipefail
+          TEMPLATE="stack-sources/iam/infrastructure/iam-stack.yaml"
+
+          echo "Linting: $TEMPLATE"
+          cfn-lint --ignore-checks W3037 "$TEMPLATE"
 
       - name: Configure AWS credentials using OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -109,7 +132,8 @@ jobs:
             stack-sources/data/infrastructure/data-stack.yaml \
             stack-sources/iam/infrastructure/iam-stack.yaml
           do
-            echo "Validating $template"
+            echo "========================================"
+            echo "Validating CloudFormation: $template"
 
             aws cloudformation validate-template \
               --template-body "file://${template}" \
@@ -162,7 +186,9 @@ jobs:
             --output text)
 
           echo "Network stack status: $STATUS"
-          [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
+
+          [[ "$STATUS" == "CREATE_COMPLETE" || \
+             "$STATUS" == "UPDATE_COMPLETE" ]]
 
   deploy-data:
     name: Deploy Data Stack
@@ -206,7 +232,9 @@ jobs:
             --output text)
 
           echo "Data stack status: $STATUS"
-          [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
+
+          [[ "$STATUS" == "CREATE_COMPLETE" || \
+             "$STATUS" == "UPDATE_COMPLETE" ]]
 
   deploy-iam:
     name: Deploy IAM Stack
@@ -251,4 +279,6 @@ jobs:
             --output text)
 
           echo "IAM stack status: $STATUS"
-          [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
+
+          [[ "$STATUS" == "CREATE_COMPLETE" || \
+             "$STATUS" == "UPDATE_COMPLETE" ]]
