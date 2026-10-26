@@ -14,7 +14,6 @@ permissions:
 env:
   AWS_REGION: us-east-1
   ENVIRONMENT: dev
-  AWS_ACCOUNT_ID: "393476285814"
 
 jobs:
   lint-and-validate:
@@ -30,17 +29,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install linters
+      - name: Install linting tools
         run: |
           python -m pip install --upgrade pip
-          pip install cfn-lint yamllint
-
-      - name: Lint CloudFormation templates
-        run: |
-          cfn-lint \
-            infrastructure/network-stack.yaml \
-            infrastructure/data-stack.yaml \
-            infrastructure/iam-stack.yaml
+          python -m pip install --upgrade cfn-lint yamllint
 
       - name: Lint YAML files
         run: |
@@ -49,6 +41,14 @@ jobs:
             infrastructure/network-stack.yaml \
             infrastructure/data-stack.yaml \
             infrastructure/iam-stack.yaml
+
+      - name: Lint CloudFormation templates
+        run: |
+          cfn-lint --version
+
+          cfn-lint \
+            infrastructure/network-stack.yaml \
+            infrastructure/data-stack.yaml
 
       - name: Configure AWS credentials using OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -69,13 +69,18 @@ jobs:
             infrastructure/data-stack.yaml \
             infrastructure/iam-stack.yaml
           do
-            test -s "$template"
+            if [[ ! -s "$template" ]]; then
+              echo "::error::Missing or empty template: $template"
+              exit 1
+            fi
 
             echo "Validating $template"
 
             aws cloudformation validate-template \
               --template-body "file://${template}" \
               --region "$AWS_REGION"
+
+            echo "Validation passed: $template"
           done
 
   deploy-network:
@@ -93,7 +98,7 @@ jobs:
           role-to-assume: arn:aws:iam::393476285814:role/medislot-github-actions-role
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Deploy Network
+      - name: Deploy Network Stack
         run: |
           aws cloudformation deploy \
             --stack-name "medislot-${ENVIRONMENT}-network" \
@@ -104,19 +109,15 @@ jobs:
             --no-fail-on-empty-changeset \
             --region "$AWS_REGION"
 
-      - name: Verify Network
+      - name: Verify Network Stack
         run: |
-          aws cloudformation wait stack-create-complete \
-            --stack-name "medislot-${ENVIRONMENT}-network" \
-            --region "$AWS_REGION" 2>/dev/null || true
-
           STATUS=$(aws cloudformation describe-stacks \
             --stack-name "medislot-${ENVIRONMENT}-network" \
             --region "$AWS_REGION" \
             --query 'Stacks[0].StackStatus' \
             --output text)
 
-          echo "Network status: $STATUS"
+          echo "Network stack status: $STATUS"
 
           [[ "$STATUS" == "CREATE_COMPLETE" || \
              "$STATUS" == "UPDATE_COMPLETE" ]]
@@ -136,7 +137,7 @@ jobs:
           role-to-assume: arn:aws:iam::393476285814:role/medislot-github-actions-role
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Deploy Data
+      - name: Deploy Data Stack
         run: |
           aws cloudformation deploy \
             --stack-name "medislot-${ENVIRONMENT}-data" \
@@ -146,7 +147,7 @@ jobs:
             --no-fail-on-empty-changeset \
             --region "$AWS_REGION"
 
-      - name: Verify Data
+      - name: Verify Data Stack
         run: |
           STATUS=$(aws cloudformation describe-stacks \
             --stack-name "medislot-${ENVIRONMENT}-data" \
@@ -154,7 +155,7 @@ jobs:
             --query 'Stacks[0].StackStatus' \
             --output text)
 
-          echo "Data status: $STATUS"
+          echo "Data stack status: $STATUS"
 
           [[ "$STATUS" == "CREATE_COMPLETE" || \
              "$STATUS" == "UPDATE_COMPLETE" ]]
@@ -174,7 +175,7 @@ jobs:
           role-to-assume: arn:aws:iam::393476285814:role/medislot-github-actions-role
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Deploy IAM
+      - name: Deploy IAM Stack
         run: |
           aws cloudformation deploy \
             --stack-name "medislot-${ENVIRONMENT}-iam" \
@@ -185,7 +186,7 @@ jobs:
             --no-fail-on-empty-changeset \
             --region "$AWS_REGION"
 
-      - name: Verify IAM
+      - name: Verify IAM Stack
         run: |
           STATUS=$(aws cloudformation describe-stacks \
             --stack-name "medislot-${ENVIRONMENT}-iam" \
@@ -193,7 +194,7 @@ jobs:
             --query 'Stacks[0].StackStatus' \
             --output text)
 
-          echo "IAM status: $STATUS"
+          echo "IAM stack status: $STATUS"
 
           [[ "$STATUS" == "CREATE_COMPLETE" || \
              "$STATUS" == "UPDATE_COMPLETE" ]]
