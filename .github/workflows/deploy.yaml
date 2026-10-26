@@ -56,7 +56,7 @@ jobs:
           cfn-lint --version
           yamllint --version
 
-      - name: Check template files
+      - name: Check required templates
         shell: bash
         run: |
           set -euo pipefail
@@ -95,19 +95,18 @@ jobs:
           import sys
           from pathlib import Path
           import yaml
-          from yaml.nodes import ScalarNode, SequenceNode, MappingNode
 
           class CloudFormationLoader(yaml.SafeLoader):
               pass
 
           def construct_intrinsic(loader, tag_suffix, node):
-              if isinstance(node, ScalarNode):
+              if isinstance(node, yaml.ScalarNode):
                   return loader.construct_scalar(node)
-              if isinstance(node, SequenceNode):
+              if isinstance(node, yaml.SequenceNode):
                   return loader.construct_sequence(node)
-              if isinstance(node, MappingNode):
+              if isinstance(node, yaml.MappingNode):
                   return loader.construct_mapping(node)
-              raise yaml.YAMLError(f"Unsupported node for !{tag_suffix}")
+              raise yaml.YAMLError(f"Unsupported intrinsic tag: !{tag_suffix}")
 
           CloudFormationLoader.add_multi_constructor(
               "!", construct_intrinsic
@@ -119,43 +118,41 @@ jobs:
               Path("stack-sources/iam/infrastructure/iam-stack.yaml"),
           ]
 
-          failed = False
+          errors = []
 
           for path in templates:
               print(f"\n=== Parsing {path} ===")
 
               try:
-                  content = path.read_text(encoding="utf-8-sig")
-                  document = yaml.load(
-                      content,
-                      Loader=CloudFormationLoader
-                  )
+                  with path.open("r", encoding="utf-8-sig") as file:
+                      document = yaml.load(
+                          file, Loader=CloudFormationLoader
+                      )
 
                   if not isinstance(document, dict):
                       raise ValueError(
-                          f"Expected a YAML mapping, got "
-                          f"{type(document).__name__}"
+                          f"Expected mapping, got {type(document).__name__}"
                       )
 
                   print("Top-level keys:", list(document.keys()))
-                  print("Has Resources:", "Resources" in document)
+                  print("Resources exists:", "Resources" in document)
 
                   if not isinstance(document.get("Resources"), dict):
                       raise ValueError(
                           "Resources must be a YAML mapping"
                       )
 
-                  print(
-                      "Resource logical IDs:",
-                      len(document["Resources"])
-                  )
+                  print("Resource count:", len(document["Resources"]))
                   print("YAML parsing passed.")
 
               except Exception as exc:
-                  failed = True
-                  print(f"ERROR in {path}: {exc}", file=sys.stderr)
+                  errors.append(f"{path}: {exc}")
+                  print(f"ERROR: {path}: {exc}", file=sys.stderr)
 
-          if failed:
+          if errors:
+              print("\nTemplate parsing failures:")
+              for error in errors:
+                  print(error)
               sys.exit(1)
           PY
 
@@ -189,8 +186,11 @@ jobs:
           sha256sum "$TEMPLATE"
           head -n 20 "$TEMPLATE"
 
-          echo "=== IAM CloudFormation lint ==="
-          cfn-lint --ignore-checks W3037 "$TEMPLATE"
+          echo "=== cfn-lint version ==="
+          cfn-lint --version
+
+          echo "=== cfn-lint JSON diagnostics ==="
+          cfn-lint --format json --ignore-checks W3037 "$TEMPLATE"
 
       - name: Configure AWS credentials using OIDC
         uses: aws-actions/configure-aws-credentials@v4
