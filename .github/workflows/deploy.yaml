@@ -106,7 +106,9 @@ jobs:
                   return loader.construct_sequence(node)
               if isinstance(node, yaml.MappingNode):
                   return loader.construct_mapping(node)
-              raise yaml.YAMLError(f"Unsupported intrinsic tag: !{tag_suffix}")
+              raise yaml.YAMLError(
+                  f"Unsupported intrinsic tag: !{tag_suffix}"
+              )
 
           CloudFormationLoader.add_multi_constructor(
               "!", construct_intrinsic
@@ -131,7 +133,8 @@ jobs:
 
                   if not isinstance(document, dict):
                       raise ValueError(
-                          f"Expected mapping, got {type(document).__name__}"
+                          f"Expected mapping, got "
+                          f"{type(document).__name__}"
                       )
 
                   print("Top-level keys:", list(document.keys()))
@@ -179,18 +182,67 @@ jobs:
 
           TEMPLATE="stack-sources/iam/infrastructure/iam-stack.yaml"
 
-          echo "=== IAM template metadata ==="
-          ls -l "$TEMPLATE"
-          file "$TEMPLATE"
+          echo "=== Verify actual template file ==="
+          pwd
+          realpath "$TEMPLATE"
           wc -c "$TEMPLATE"
           sha256sum "$TEMPLATE"
+
+          echo "=== IAM template first 20 lines ==="
           head -n 20 "$TEMPLATE"
+
+          echo "=== Verify YAML structure ==="
+          python - "$TEMPLATE" <<'PY'
+          import sys
+          import yaml
+
+          class CFNLoader(yaml.SafeLoader):
+              pass
+
+          def intrinsic(loader, suffix, node):
+              if isinstance(node, yaml.ScalarNode):
+                  return loader.construct_scalar(node)
+              if isinstance(node, yaml.SequenceNode):
+                  return loader.construct_sequence(node)
+              if isinstance(node, yaml.MappingNode):
+                  return loader.construct_mapping(node)
+              raise yaml.YAMLError(
+                  f"Unsupported intrinsic tag: !{suffix}"
+              )
+
+          CFNLoader.add_multi_constructor("!", intrinsic)
+
+          with open(sys.argv[1], encoding="utf-8-sig") as file:
+              data = yaml.load(file, Loader=CFNLoader)
+
+          print("Root type:", type(data).__name__)
+          print(
+              "Root keys:",
+              list(data) if isinstance(data, dict) else None
+          )
+          print(
+              "Resources type:",
+              type(data.get("Resources")).__name__
+              if isinstance(data, dict)
+              else "No root mapping"
+          )
+
+          if not isinstance(data, dict):
+              raise SystemExit("ERROR: YAML root must be a mapping")
+
+          if not isinstance(data.get("Resources"), dict):
+              raise SystemExit(
+                  "ERROR: Resources must be a mapping"
+              )
+
+          print("YAML structure is valid.")
+          PY
 
           echo "=== cfn-lint version ==="
           cfn-lint --version
 
-          echo "=== cfn-lint JSON diagnostics ==="
-          cfn-lint --format json --ignore-checks W3037 "$TEMPLATE"
+          echo "=== cfn-lint IAM template ==="
+          cfn-lint --ignore-checks W3037 "$TEMPLATE"
 
       - name: Configure AWS credentials using OIDC
         uses: aws-actions/configure-aws-credentials@v4
