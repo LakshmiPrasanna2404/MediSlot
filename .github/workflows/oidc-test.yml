@@ -1,0 +1,32 @@
+
+name: MediSlot OIDC Connection Test
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  verify-aws-connection:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials using OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::393476285814:role/medislot-github-actions-role
+          aws-region: us-east-1
+
+      - name: Verify AWS identity
+        run: aws sts get-caller-identity
+
+      - name: Validate network template
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://infrastructure/network-stack.yaml \
+            --region us-east-1
