@@ -44,11 +44,9 @@ jobs:
 
       - name: Lint CloudFormation templates
         run: |
-          cfn-lint --version
-
-          cfn-lint \
-            infrastructure/network-stack.yaml \
-            infrastructure/data-stack.yaml
+          cfn-lint infrastructure/network-stack.yaml
+          cfn-lint infrastructure/data-stack.yaml
+          cfn-lint infrastructure/iam-stack.yaml
 
       - name: Configure AWS credentials using OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -56,11 +54,7 @@ jobs:
           role-to-assume: arn:aws:iam::393476285814:role/medislot-github-actions-role
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Verify AWS identity
-        run: aws sts get-caller-identity
-
       - name: Validate CloudFormation templates
-        shell: bash
         run: |
           set -euo pipefail
 
@@ -69,18 +63,12 @@ jobs:
             infrastructure/data-stack.yaml \
             infrastructure/iam-stack.yaml
           do
-            if [[ ! -s "$template" ]]; then
-              echo "::error::Missing or empty template: $template"
-              exit 1
-            fi
-
+            test -s "$template"
             echo "Validating $template"
 
             aws cloudformation validate-template \
               --template-body "file://${template}" \
               --region "$AWS_REGION"
-
-            echo "Validation passed: $template"
           done
 
   deploy-network:
@@ -89,16 +77,14 @@ jobs:
     needs: lint-and-validate
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials using OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::393476285814:role/medislot-github-actions-role
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Deploy Network Stack
+      - name: Deploy Network
         run: |
           aws cloudformation deploy \
             --stack-name "medislot-${ENVIRONMENT}-network" \
@@ -109,7 +95,7 @@ jobs:
             --no-fail-on-empty-changeset \
             --region "$AWS_REGION"
 
-      - name: Verify Network Stack
+      - name: Verify Network
         run: |
           STATUS=$(aws cloudformation describe-stacks \
             --stack-name "medislot-${ENVIRONMENT}-network" \
@@ -117,10 +103,8 @@ jobs:
             --query 'Stacks[0].StackStatus' \
             --output text)
 
-          echo "Network stack status: $STATUS"
-
-          [[ "$STATUS" == "CREATE_COMPLETE" || \
-             "$STATUS" == "UPDATE_COMPLETE" ]]
+          echo "Network: $STATUS"
+          [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
 
   deploy-data:
     name: Deploy Data Stack
@@ -128,26 +112,23 @@ jobs:
     needs: deploy-network
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials using OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::393476285814:role/medislot-github-actions-role
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Deploy Data Stack
+      - name: Deploy Data
         run: |
           aws cloudformation deploy \
             --stack-name "medislot-${ENVIRONMENT}-data" \
             --template-file infrastructure/data-stack.yaml \
-            --parameter-overrides \
-              Environment="${ENVIRONMENT}" \
+            --parameter-overrides Environment="${ENVIRONMENT}" \
             --no-fail-on-empty-changeset \
             --region "$AWS_REGION"
 
-      - name: Verify Data Stack
+      - name: Verify Data
         run: |
           STATUS=$(aws cloudformation describe-stacks \
             --stack-name "medislot-${ENVIRONMENT}-data" \
@@ -155,10 +136,8 @@ jobs:
             --query 'Stacks[0].StackStatus' \
             --output text)
 
-          echo "Data stack status: $STATUS"
-
-          [[ "$STATUS" == "CREATE_COMPLETE" || \
-             "$STATUS" == "UPDATE_COMPLETE" ]]
+          echo "Data: $STATUS"
+          [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
 
   deploy-iam:
     name: Deploy IAM Stack
@@ -166,27 +145,24 @@ jobs:
     needs: deploy-data
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Configure AWS credentials using OIDC
-        uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::393476285814:role/medislot-github-actions-role
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Deploy IAM Stack
+      - name: Deploy IAM
         run: |
           aws cloudformation deploy \
             --stack-name "medislot-${ENVIRONMENT}-iam" \
             --template-file infrastructure/iam-stack.yaml \
-            --parameter-overrides \
-              Environment="${ENVIRONMENT}" \
+            --parameter-overrides Environment="${ENVIRONMENT}" \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset \
             --region "$AWS_REGION"
 
-      - name: Verify IAM Stack
+      - name: Verify IAM
         run: |
           STATUS=$(aws cloudformation describe-stacks \
             --stack-name "medislot-${ENVIRONMENT}-iam" \
@@ -194,7 +170,5 @@ jobs:
             --query 'Stacks[0].StackStatus' \
             --output text)
 
-          echo "IAM stack status: $STATUS"
-
-          [[ "$STATUS" == "CREATE_COMPLETE" || \
-             "$STATUS" == "UPDATE_COMPLETE" ]]
+          echo "IAM: $STATUS"
+          [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
