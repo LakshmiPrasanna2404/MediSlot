@@ -269,6 +269,33 @@ Resources:
       Roles:
         - !Ref DashboardEC2Role
 
+
+  # ---------------------------------------------------------
+  # GitHub Actions deployment permissions
+  # Deploy this IAM stack BEFORE the data stack so the deployment
+  # role has DescribeTable permission before CloudFormation updates DynamoDB.
+  # ---------------------------------------------------------
+
+  GitHubActionsDataDescribeTablePolicy:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub medislot-${Environment}-github-actions-data-describe-table
+      Roles:
+        - medislot-github-actions-role
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DescribeMediSlotDataTables
+            Effect: Allow
+            Action:
+              - dynamodb:DescribeTable
+            Resource:
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-token-revocations
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slot-reservations
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist-offers
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-idempotency
+              - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-notification-dispatch
+
 Outputs:
   AuthorizerLambdaRoleArn:
     Description: IAM role ARN for the authorizer Lambda
