@@ -1,4 +1,3 @@
-
 name: MediSlot CloudFormation CI/CD Pipeline
 
 on:
@@ -19,7 +18,6 @@ jobs:
   lint-and-validate:
     name: Lint and Validate Templates
     runs-on: ubuntu-latest
-
     steps:
       - name: Checkout main
         uses: actions/checkout@v4
@@ -39,7 +37,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           for template in \
             infrastructure/network-stack.yaml \
             infrastructure/data-stack.yaml \
@@ -49,7 +46,6 @@ jobs:
               echo "::error::Template missing or empty: $template"
               exit 1
             fi
-
             echo "Found: $template"
             sha256sum "$template"
           done
@@ -66,7 +62,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           python - <<'PY'
           from pathlib import Path
           import yaml
@@ -90,22 +85,15 @@ jobs:
               Path("infrastructure/data-stack.yaml"),
               Path("infrastructure/iam-stack.yaml"),
           ]
-
           for path in templates:
               print(f"\nChecking {path}")
-
               with path.open("r", encoding="utf-8-sig") as file:
                   document = yaml.load(file, Loader=CloudFormationLoader)
-
               if not isinstance(document, dict):
                   raise ValueError(f"{path}: document root must be a mapping")
-
               resources = document.get("Resources")
               if not isinstance(resources, dict) or not resources:
-                  raise ValueError(
-                      f"{path}: Resources must be a non-empty mapping"
-                  )
-
+                  raise ValueError(f"{path}: Resources must be a non-empty mapping")
               print(f"Resource count: {len(resources)}")
               print("YAML structure passed.")
           PY
@@ -132,18 +120,15 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           for template in \
             infrastructure/network-stack.yaml \
             infrastructure/data-stack.yaml \
             infrastructure/iam-stack.yaml
           do
             echo "Validating $template"
-
             aws cloudformation validate-template \
               --template-body "file://${template}" \
               --region "$AWS_REGION"
-
             echo "Validation passed: $template"
           done
 
@@ -151,7 +136,6 @@ jobs:
     name: Deploy Network Stack
     runs-on: ubuntu-latest
     needs: lint-and-validate
-
     steps:
       - name: Checkout main
         uses: actions/checkout@v4
@@ -165,7 +149,6 @@ jobs:
       - name: Deploy Network
         run: |
           set -euo pipefail
-
           aws cloudformation deploy \
             --stack-name "medislot-${ENVIRONMENT}-network" \
             --template-file infrastructure/network-stack.yaml \
@@ -179,23 +162,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           STATUS=$(aws cloudformation describe-stacks \
             --stack-name "medislot-${ENVIRONMENT}-network" \
             --region "$AWS_REGION" \
             --query 'Stacks[0].StackStatus' \
             --output text)
-
           echo "Network stack status: $STATUS"
-
-          [[ "$STATUS" == "CREATE_COMPLETE" || \
-             "$STATUS" == "UPDATE_COMPLETE" ]]
+          [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
 
   deploy-iam:
     name: Deploy IAM Stack
     runs-on: ubuntu-latest
     needs: deploy-network
-
     steps:
       - name: Checkout main
         uses: actions/checkout@v4
@@ -209,7 +187,6 @@ jobs:
       - name: Deploy IAM
         run: |
           set -euo pipefail
-
           aws cloudformation deploy \
             --stack-name "medislot-${ENVIRONMENT}-iam" \
             --template-file infrastructure/iam-stack.yaml \
@@ -222,23 +199,18 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           STATUS=$(aws cloudformation describe-stacks \
             --stack-name "medislot-${ENVIRONMENT}-iam" \
             --region "$AWS_REGION" \
             --query 'Stacks[0].StackStatus' \
             --output text)
-
           echo "IAM stack status: $STATUS"
-
-          [[ "$STATUS" == "CREATE_COMPLETE" || \
-             "$STATUS" == "UPDATE_COMPLETE" ]]
+          [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
 
   deploy-data:
     name: Deploy Data Stack
     runs-on: ubuntu-latest
     needs: deploy-iam
-
     steps:
       - name: Checkout main
         uses: actions/checkout@v4
@@ -252,7 +224,6 @@ jobs:
       - name: Deploy Data
         run: |
           set -euo pipefail
-
           aws cloudformation deploy \
             --stack-name "medislot-${ENVIRONMENT}-data" \
             --template-file infrastructure/data-stack.yaml \
@@ -264,14 +235,10 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           STATUS=$(aws cloudformation describe-stacks \
             --stack-name "medislot-${ENVIRONMENT}-data" \
             --region "$AWS_REGION" \
             --query 'Stacks[0].StackStatus' \
             --output text)
-
           echo "Data stack status: $STATUS"
-
-          [[ "$STATUS" == "CREATE_COMPLETE" || \
-             "$STATUS" == "UPDATE_COMPLETE" ]]
+          [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]

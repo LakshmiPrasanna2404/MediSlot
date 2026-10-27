@@ -332,7 +332,7 @@ Outputs:
       Name: !Sub 'medislot-${Environment}-slot-reservations-table-name'
 
   SlotReservationsTableArn:
-    Value: !GetAtt SlotReservationsTable.Arn
+    Value: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slot-reservations'
     Export:
       Name: !Sub 'medislot-${Environment}-slot-reservations-table-arn'
 
@@ -342,7 +342,7 @@ Outputs:
       Name: !Sub 'medislot-${Environment}-waitlist-offers-table-name'
 
   WaitlistOffersTableArn:
-    Value: !GetAtt WaitlistOffersTable.Arn
+    Value: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist-offers'
     Export:
       Name: !Sub 'medislot-${Environment}-waitlist-offers-table-arn'
 
@@ -352,7 +352,7 @@ Outputs:
       Name: !Sub 'medislot-${Environment}-token-revocations-table-name'
 
   TokenRevocationsTableArn:
-    Value: !GetAtt TokenRevocationsTable.Arn
+    Value: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-token-revocations'
     Export:
       Name: !Sub 'medislot-${Environment}-token-revocations-table-arn'
 
@@ -362,7 +362,7 @@ Outputs:
       Name: !Sub 'medislot-${Environment}-idempotency-table-name'
 
   IdempotencyTableArn:
-    Value: !GetAtt IdempotencyTable.Arn
+    Value: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-idempotency'
     Export:
       Name: !Sub 'medislot-${Environment}-idempotency-table-arn'
 
@@ -372,7 +372,7 @@ Outputs:
       Name: !Sub 'medislot-${Environment}-notification-dispatch-table-name'
 
   NotificationDispatchTableArn:
-    Value: !GetAtt NotificationDispatchTable.Arn
+    Value: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-notification-dispatch'
     Export:
       Name: !Sub 'medislot-${Environment}-notification-dispatch-table-arn'
 
