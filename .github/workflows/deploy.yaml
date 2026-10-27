@@ -1,3 +1,4 @@
+
 name: MediSlot CloudFormation CI/CD Pipeline
 
 on:
@@ -101,7 +102,9 @@ jobs:
 
               resources = document.get("Resources")
               if not isinstance(resources, dict) or not resources:
-                  raise ValueError(f"{path}: Resources must be a non-empty mapping")
+                  raise ValueError(
+                      f"{path}: Resources must be a non-empty mapping"
+                  )
 
               print(f"Resource count: {len(resources)}")
               print("YAML structure passed.")
@@ -188,52 +191,10 @@ jobs:
           [[ "$STATUS" == "CREATE_COMPLETE" || \
              "$STATUS" == "UPDATE_COMPLETE" ]]
 
-  deploy-data:
-    name: Deploy Data Stack
-    runs-on: ubuntu-latest
-    needs: deploy-network
-
-    steps:
-      - name: Checkout main
-        uses: actions/checkout@v4
-
-      - name: Configure AWS credentials using OIDC
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::393476285814:role/medislot-github-actions-role
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Deploy Data
-        run: |
-          set -euo pipefail
-
-          aws cloudformation deploy \
-            --stack-name "medislot-${ENVIRONMENT}-data" \
-            --template-file infrastructure/data-stack.yaml \
-            --parameter-overrides Environment="${ENVIRONMENT}" \
-            --no-fail-on-empty-changeset \
-            --region "$AWS_REGION"
-
-      - name: Verify Data
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          STATUS=$(aws cloudformation describe-stacks \
-            --stack-name "medislot-${ENVIRONMENT}-data" \
-            --region "$AWS_REGION" \
-            --query 'Stacks[0].StackStatus' \
-            --output text)
-
-          echo "Data stack status: $STATUS"
-
-          [[ "$STATUS" == "CREATE_COMPLETE" || \
-             "$STATUS" == "UPDATE_COMPLETE" ]]
-
   deploy-iam:
     name: Deploy IAM Stack
     runs-on: ubuntu-latest
-    needs: deploy-data
+    needs: deploy-network
 
     steps:
       - name: Checkout main
@@ -269,6 +230,48 @@ jobs:
             --output text)
 
           echo "IAM stack status: $STATUS"
+
+          [[ "$STATUS" == "CREATE_COMPLETE" || \
+             "$STATUS" == "UPDATE_COMPLETE" ]]
+
+  deploy-data:
+    name: Deploy Data Stack
+    runs-on: ubuntu-latest
+    needs: deploy-iam
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials using OIDC
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::393476285814:role/medislot-github-actions-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Deploy Data
+        run: |
+          set -euo pipefail
+
+          aws cloudformation deploy \
+            --stack-name "medislot-${ENVIRONMENT}-data" \
+            --template-file infrastructure/data-stack.yaml \
+            --parameter-overrides Environment="${ENVIRONMENT}" \
+            --no-fail-on-empty-changeset \
+            --region "$AWS_REGION"
+
+      - name: Verify Data
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "medislot-${ENVIRONMENT}-data" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].StackStatus' \
+            --output text)
+
+          echo "Data stack status: $STATUS"
 
           [[ "$STATUS" == "CREATE_COMPLETE" || \
              "$STATUS" == "UPDATE_COMPLETE" ]]
