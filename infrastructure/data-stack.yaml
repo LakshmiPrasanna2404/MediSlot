@@ -60,7 +60,6 @@ Resources:
     Properties:
       DBInstanceIdentifier: !Sub 'medislot-${Environment}-mysql'
       Engine: mysql
-      EngineVersion: '8.0'
       DBInstanceClass: !Ref DBInstanceClass
       DBName: medislot
       MasterUsername: medislotadmin
