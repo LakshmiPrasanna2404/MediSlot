@@ -1,4 +1,3 @@
-
 name: MediSlot CloudFormation CI/CD Pipeline
 
 on:
@@ -21,26 +20,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout workflow from main
+      - name: Checkout main
         uses: actions/checkout@v4
-
-      - name: Checkout Network Stack
-        uses: actions/checkout@v4
-        with:
-          ref: feature/network-stack
-          path: stack-sources/network
-
-      - name: Checkout Data Stack
-        uses: actions/checkout@v4
-        with:
-          ref: feature/data-stack
-          path: stack-sources/data
-
-      - name: Checkout IAM Stack
-        uses: actions/checkout@v4
-        with:
-          ref: feature/iam-stack
-          path: stack-sources/iam
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -48,13 +29,10 @@ jobs:
           python-version: "3.12"
 
       - name: Install validation tools
-        shell: bash
         run: |
           set -euo pipefail
           python -m pip install --upgrade pip
           python -m pip install cfn-lint yamllint PyYAML
-          cfn-lint --version
-          yamllint --version
 
       - name: Check required templates
         shell: bash
@@ -62,9 +40,9 @@ jobs:
           set -euo pipefail
 
           for template in \
-            stack-sources/network/infrastructure/network-stack.yaml \
-            stack-sources/data/infrastructure/data-stack.yaml \
-            stack-sources/iam/infrastructure/iam-stack.yaml
+            infrastructure/network-stack.yaml \
+            infrastructure/data-stack.yaml \
+            infrastructure/iam-stack.yaml
           do
             if [[ ! -s "$template" ]]; then
               echo "::error::Template missing or empty: $template"
@@ -72,19 +50,16 @@ jobs:
             fi
 
             echo "Found: $template"
-            wc -c "$template"
             sha256sum "$template"
           done
 
       - name: Lint YAML formatting
-        shell: bash
         run: |
           set -euo pipefail
-
           yamllint -d relaxed \
-            stack-sources/network/infrastructure/network-stack.yaml \
-            stack-sources/data/infrastructure/data-stack.yaml \
-            stack-sources/iam/infrastructure/iam-stack.yaml
+            infrastructure/network-stack.yaml \
+            infrastructure/data-stack.yaml \
+            infrastructure/iam-stack.yaml
 
       - name: Verify CloudFormation YAML structure
         shell: bash
@@ -92,7 +67,6 @@ jobs:
           set -euo pipefail
 
           python - <<'PY'
-          import sys
           from pathlib import Path
           import yaml
 
@@ -106,80 +80,41 @@ jobs:
                   return loader.construct_sequence(node)
               if isinstance(node, yaml.MappingNode):
                   return loader.construct_mapping(node)
-              raise yaml.YAMLError(
-                  f"Unsupported intrinsic tag: !{tag_suffix}"
-              )
+              raise yaml.YAMLError(f"Unsupported intrinsic tag: !{tag_suffix}")
 
-          CloudFormationLoader.add_multi_constructor(
-              "!", construct_intrinsic
-          )
+          CloudFormationLoader.add_multi_constructor("!", construct_intrinsic)
 
           templates = [
-              Path("stack-sources/network/infrastructure/network-stack.yaml"),
-              Path("stack-sources/data/infrastructure/data-stack.yaml"),
-              Path("stack-sources/iam/infrastructure/iam-stack.yaml"),
+              Path("infrastructure/network-stack.yaml"),
+              Path("infrastructure/data-stack.yaml"),
+              Path("infrastructure/iam-stack.yaml"),
           ]
 
           for path in templates:
               print(f"\nChecking {path}")
 
               with path.open("r", encoding="utf-8-sig") as file:
-                  document = yaml.load(
-                      file, Loader=CloudFormationLoader
-                  )
+                  document = yaml.load(file, Loader=CloudFormationLoader)
 
               if not isinstance(document, dict):
-                  raise ValueError(
-                      f"{path}: document root must be a mapping"
-                  )
+                  raise ValueError(f"{path}: document root must be a mapping")
 
               resources = document.get("Resources")
+              if not isinstance(resources, dict) or not resources:
+                  raise ValueError(f"{path}: Resources must be a non-empty mapping")
 
-              if not isinstance(resources, dict):
-                  raise ValueError(
-                      f"{path}: Resources must be a mapping"
-                  )
-
-              print("Top-level keys:", list(document.keys()))
-              print("Resource count:", len(resources))
+              print(f"Resource count: {len(resources)}")
               print("YAML structure passed.")
           PY
 
-      - name: Lint Network CloudFormation template
-        shell: bash
-        run: |
-          set -euo pipefail
-          TEMPLATE="stack-sources/network/infrastructure/network-stack.yaml"
-          echo "Linting Network: $TEMPLATE"
-          cfn-lint --template "$TEMPLATE"
+      - name: Lint Network template
+        run: cfn-lint --template infrastructure/network-stack.yaml
 
-      - name: Lint Data CloudFormation template
-        shell: bash
-        run: |
-          set -euo pipefail
-          TEMPLATE="stack-sources/data/infrastructure/data-stack.yaml"
-          echo "Linting Data: $TEMPLATE"
-          cfn-lint --template "$TEMPLATE"
+      - name: Lint Data template
+        run: cfn-lint --template infrastructure/data-stack.yaml
 
-      - name: Diagnose and Lint IAM CloudFormation template
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          TEMPLATE="stack-sources/iam/infrastructure/iam-stack.yaml"
-
-          echo "=== IAM template information ==="
-          pwd
-          realpath "$TEMPLATE"
-          wc -c "$TEMPLATE"
-          sha256sum "$TEMPLATE"
-          head -n 20 "$TEMPLATE"
-
-          echo "=== cfn-lint version ==="
-          cfn-lint --version
-
-          echo "=== IAM lint using explicit template argument ==="
-          cfn-lint --template "$TEMPLATE" --ignore-checks W3037
+      - name: Lint IAM template
+        run: cfn-lint --template infrastructure/iam-stack.yaml --ignore-checks W3037
 
       - name: Configure AWS credentials using OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -188,28 +123,25 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Verify AWS identity
-        shell: bash
-        run: |
-          set -euo pipefail
-          aws sts get-caller-identity
+        run: aws sts get-caller-identity
 
-      - name: Validate CloudFormation templates with AWS
+      - name: Validate templates with AWS
         shell: bash
         run: |
           set -euo pipefail
 
           for template in \
-            stack-sources/network/infrastructure/network-stack.yaml \
-            stack-sources/data/infrastructure/data-stack.yaml \
-            stack-sources/iam/infrastructure/iam-stack.yaml
+            infrastructure/network-stack.yaml \
+            infrastructure/data-stack.yaml \
+            infrastructure/iam-stack.yaml
           do
-            echo "Validating with AWS: $template"
+            echo "Validating $template"
 
             aws cloudformation validate-template \
               --template-body "file://${template}" \
               --region "$AWS_REGION"
 
-            echo "AWS validation passed: $template"
+            echo "Validation passed: $template"
           done
 
   deploy-network:
@@ -218,11 +150,8 @@ jobs:
     needs: lint-and-validate
 
     steps:
-      - name: Checkout Network Stack
+      - name: Checkout main
         uses: actions/checkout@v4
-        with:
-          ref: feature/network-stack
-          path: stack-source
 
       - name: Configure AWS credentials using OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -231,13 +160,12 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy Network
-        shell: bash
         run: |
           set -euo pipefail
 
           aws cloudformation deploy \
             --stack-name "medislot-${ENVIRONMENT}-network" \
-            --template-file stack-source/infrastructure/network-stack.yaml \
+            --template-file infrastructure/network-stack.yaml \
             --parameter-overrides \
               Environment="${ENVIRONMENT}" \
               EnableInterfaceEndpoints=false \
@@ -266,11 +194,8 @@ jobs:
     needs: deploy-network
 
     steps:
-      - name: Checkout Data Stack
+      - name: Checkout main
         uses: actions/checkout@v4
-        with:
-          ref: feature/data-stack
-          path: stack-source
 
       - name: Configure AWS credentials using OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -279,13 +204,12 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy Data
-        shell: bash
         run: |
           set -euo pipefail
 
           aws cloudformation deploy \
             --stack-name "medislot-${ENVIRONMENT}-data" \
-            --template-file stack-source/infrastructure/data-stack.yaml \
+            --template-file infrastructure/data-stack.yaml \
             --parameter-overrides Environment="${ENVIRONMENT}" \
             --no-fail-on-empty-changeset \
             --region "$AWS_REGION"
@@ -312,11 +236,8 @@ jobs:
     needs: deploy-data
 
     steps:
-      - name: Checkout IAM Stack
+      - name: Checkout main
         uses: actions/checkout@v4
-        with:
-          ref: feature/iam-stack
-          path: stack-source
 
       - name: Configure AWS credentials using OIDC
         uses: aws-actions/configure-aws-credentials@v4
@@ -325,13 +246,12 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy IAM
-        shell: bash
         run: |
           set -euo pipefail
 
           aws cloudformation deploy \
             --stack-name "medislot-${ENVIRONMENT}-iam" \
-            --template-file stack-source/infrastructure/iam-stack.yaml \
+            --template-file infrastructure/iam-stack.yaml \
             --parameter-overrides Environment="${ENVIRONMENT}" \
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset \
