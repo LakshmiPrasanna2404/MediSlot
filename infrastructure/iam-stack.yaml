@@ -1,3 +1,4 @@
+
 AWSTemplateFormatVersion: '2010-09-09'
 Description: MediSlot environment-specific IAM roles and least-privilege execution policies
 
@@ -76,12 +77,17 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/medislot-${Environment}-*:*
+
+              # Read only authentication and dedicated database parameters
               - Sid: ReadAuthParameters
                 Effect: Allow
                 Action:
                   - ssm:GetParameter
                   - ssm:GetParameters
-                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/*
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/database/*
+
               - Sid: ManageTokenRevocations
                 Effect: Allow
                 Action:
@@ -90,6 +96,29 @@ Resources:
                   - dynamodb:DeleteItem
                   - dynamodb:UpdateItem
                 Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-token-revocations
+
+              # Lambda VPC network-interface permissions
+              # These EC2 actions require Resource: '*'.
+              - Sid: ManageLambdaNetworkInterfaces
+                Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                  - ec2:AssignPrivateIpAddresses
+                  - ec2:UnassignPrivateIpAddresses
+                Resource: '*'
+
+              # TEMPORARY: Existing auth code still reads the RDS master secret.
+              # Remove this permission after migrating auth to the dedicated
+              # application database credentials in SSM.
+              - Sid: ReadDatabaseMasterSecret
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource:
+                  Fn::ImportValue:
+                    Fn::Sub: medislot-${Environment}-db-master-secret-arn
 
   # Main application Lambda execution role
   AppLambdaRole:
@@ -118,12 +147,14 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/medislot-${Environment}-*:*
+
               - Sid: ReadApplicationParameters
                 Effect: Allow
                 Action:
                   - ssm:GetParameter
                   - ssm:GetParameters
                 Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/*
+
               - Sid: AccessApplicationTables
                 Effect: Allow
                 Action:
@@ -145,11 +176,13 @@ Resources:
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-idempotency
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-idempotency/index/*
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-notification-dispatch
+
               - Sid: PublishApplicationEvents
                 Effect: Allow
                 Action:
                   - events:PutEvents
                 Resource: !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/medislot-${Environment}-*
+
               - Sid: PublishApplicationNotifications
                 Effect: Allow
                 Action:
@@ -183,12 +216,14 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/medislot-${Environment}-*:*
+
               - Sid: ReadReportParameters
                 Effect: Allow
                 Action:
                   - ssm:GetParameter
                   - ssm:GetParameters
                 Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/*
+
               - Sid: AccessReportTables
                 Effect: Allow
                 Action:
@@ -200,6 +235,7 @@ Resources:
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slot-reservations
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist-offers
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-notification-dispatch
+
               - Sid: WriteReportFiles
                 Effect: Allow
                 Action:
@@ -233,6 +269,7 @@ Resources:
                   - ssm:GetParameter
                   - ssm:GetParameters
                 Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/dashboard/*
+
               - Sid: ReadDashboardMetrics
                 Effect: Allow
                 Action:
@@ -240,6 +277,7 @@ Resources:
                   - cloudwatch:GetMetricStatistics
                   - cloudwatch:ListMetrics
                 Resource: '*'
+
               - Sid: ReadDashboardLogs
                 Effect: Allow
                 Action:
@@ -256,33 +294,37 @@ Resources:
       Roles:
         - !Ref DashboardEC2Role
 
-
 Outputs:
   AuthorizerLambdaRoleArn:
     Description: IAM role ARN for the authorizer Lambda
     Value: !GetAtt AuthorizerLambdaRole.Arn
     Export:
       Name: !Sub medislot-${Environment}-authorizer-role-arn
+
   AuthLambdaRoleArn:
     Description: IAM role ARN for authentication Lambdas
     Value: !GetAtt AuthLambdaRole.Arn
     Export:
       Name: !Sub medislot-${Environment}-auth-role-arn
+
   AppLambdaRoleArn:
     Description: IAM role ARN for application Lambda functions
     Value: !GetAtt AppLambdaRole.Arn
     Export:
       Name: !Sub medislot-${Environment}-app-role-arn
+
   ReportLambdaRoleArn:
     Description: IAM role ARN for report Lambdas
     Value: !GetAtt ReportLambdaRole.Arn
     Export:
       Name: !Sub medislot-${Environment}-report-role-arn
+
   DashboardEC2RoleArn:
     Description: IAM role ARN for dashboard EC2
     Value: !GetAtt DashboardEC2Role.Arn
     Export:
       Name: !Sub medislot-${Environment}-dashboard-role-arn
+
   DashboardInstanceProfileName:
     Description: Instance profile name for dashboard EC2
     Value: !Ref DashboardInstanceProfile

@@ -1,0 +1,218 @@
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  MediSlot authentication stack for patient registration,
+  login, JWT refresh, logout, and JWT authorization.
+
+Parameters:
+  Environment:
+    Type: String
+    Description: Deployment environment
+    AllowedValues:
+      - dev
+      - prod
+    Default: dev
+
+  AuthCodeS3Bucket:
+    Type: String
+    Description: S3 bucket containing the packaged Python authentication Lambda code
+
+  AuthCodeS3Key:
+    Type: String
+    Description: S3 object key for the authentication Lambda package
+
+  AuthorizerCodeS3Bucket:
+    Type: String
+    Description: S3 bucket containing the packaged Python authorizer Lambda code
+
+  AuthorizerCodeS3Key:
+    Type: String
+    Description: S3 object key for the authorizer Lambda package
+
+  AuthHandler:
+    Type: String
+    Default: auth_handler.lambda_handler
+    Description: Python module and handler for authentication
+
+  AuthorizerHandler:
+    Type: String
+    Default: authorizer_handler.lambda_handler
+    Description: Python module and handler for JWT authorization
+
+  PythonRuntime:
+    Type: String
+    Default: python3.12
+    AllowedValues:
+      - python3.12
+
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    AllowedValues:
+      - 7
+      - 14
+      - 30
+      - 60
+      - 90
+
+Resources:
+  # ---------------------------------------------------------
+  # Authentication Lambda logs
+  # ---------------------------------------------------------
+
+  AuthFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-auth
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  AuthorizerFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-authorizer
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ---------------------------------------------------------
+  # Authentication Lambda
+  # Uses dedicated database credentials from SSM SecureString.
+  # ---------------------------------------------------------
+
+  AuthFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - AuthFunctionLogGroup
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-auth
+      Description: >-
+        Register patients, authenticate credentials,
+        refresh JWTs, and revoke sessions on logout.
+      Runtime: !Ref PythonRuntime
+      Handler: !Ref AuthHandler
+      Role:
+        Fn::ImportValue:
+          Fn::Sub: medislot-${Environment}-auth-role-arn
+      Timeout: 15
+      MemorySize: 256
+      Architectures:
+        - x86_64
+      Code:
+        S3Bucket: !Ref AuthCodeS3Bucket
+        S3Key: !Ref AuthCodeS3Key
+      VpcConfig:
+        SubnetIds:
+          - Fn::ImportValue:
+              Fn::Sub: medislot-${Environment}-lambda-subnet-az1-id
+          - Fn::ImportValue:
+              Fn::Sub: medislot-${Environment}-lambda-subnet-az2-id
+        SecurityGroupIds:
+          - Fn::ImportValue:
+              Fn::Sub: medislot-${Environment}-lambda-sg-id
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          DB_HOST:
+            Fn::ImportValue:
+              Fn::Sub: medislot-${Environment}-db-endpoint
+          DB_PORT:
+            Fn::ImportValue:
+              Fn::Sub: medislot-${Environment}-db-port
+          DB_NAME:
+            Fn::ImportValue:
+              Fn::Sub: medislot-${Environment}-db-name
+          DB_SECRET_ARN:
+            Fn::ImportValue:
+              Fn::Sub: medislot-${Environment}-db-master-secret-arn
+          TOKEN_REVOCATIONS_TABLE:
+            Fn::ImportValue:
+              Fn::Sub: medislot-${Environment}-token-revocations-table-name
+          JWT_SECRET_PARAMETER: !Sub /medislot/${Environment}/auth/jwt-secret
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ---------------------------------------------------------
+  # JWT Lambda Authorizer
+  # ---------------------------------------------------------
+
+  AuthorizerFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - AuthorizerFunctionLogGroup
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-authorizer
+      Description: >-
+        Verify JWT signature and expiry, check token revocation,
+        and return the authenticated user and role context.
+      Runtime: !Ref PythonRuntime
+      Handler: !Ref AuthorizerHandler
+      Role:
+        Fn::ImportValue:
+          Fn::Sub: medislot-${Environment}-authorizer-role-arn
+      Timeout: 10
+      MemorySize: 128
+      Architectures:
+        - x86_64
+      Code:
+        S3Bucket: !Ref AuthorizerCodeS3Bucket
+        S3Key: !Ref AuthorizerCodeS3Key
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          JWT_SECRET_PARAMETER: !Sub /medislot/${Environment}/auth/jwt-secret
+          TOKEN_REVOCATIONS_TABLE:
+            Fn::ImportValue:
+              Fn::Sub: medislot-${Environment}-token-revocations-table-name
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+Outputs:
+  AuthFunctionName:
+    Description: Authentication Lambda function name
+    Value: !Ref AuthFunction
+    Export:
+      Name: !Sub medislot-${Environment}-auth-function-name
+
+  AuthFunctionArn:
+    Description: Authentication Lambda function ARN
+    Value: !GetAtt AuthFunction.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-auth-function-arn
+
+  AuthorizerFunctionName:
+    Description: JWT authorizer Lambda function name
+    Value: !Ref AuthorizerFunction
+    Export:
+      Name: !Sub medislot-${Environment}-authorizer-function-name
+
+  AuthorizerFunctionArn:
+    Description: JWT authorizer Lambda function ARN
+    Value: !GetAtt AuthorizerFunction.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-authorizer-function-arn
+
+  TokenRevocationsTableName:
+    Description: Existing DynamoDB table used for JWT revocation checks
+    Value:
+      Fn::ImportValue:
+        Fn::Sub: medislot-${Environment}-token-revocations-table-name
+
+  AuthDatabaseEndpoint:
+    Description: Existing private RDS endpoint
+    Value:
+      Fn::ImportValue:
+        Fn::Sub: medislot-${Environment}-db-endpoint

@@ -12,16 +12,45 @@ Parameters:
       - prod
     Default: dev
 
-  EnableInterfaceEndpoints:
+  EnableSSMEndpoint:
     Type: String
-    Description: >
-      Create paid interface endpoints for SSM, SNS, EventBridge and
-      Step Functions. Enable these when private Lambdas need these services
-      without a NAT Gateway.
+    Description: Create the SSM interface endpoint for private Lambda access to Parameter Store.
     AllowedValues:
       - 'true'
       - 'false'
-    Default: 'true'
+    Default: 'false'
+
+  EnableSecretsManagerEndpoint:
+    Type: String
+    Description: Create the Secrets Manager interface endpoint for private Lambda access to database credentials.
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Default: 'false'
+
+  EnableSNSEndpoint:
+    Type: String
+    Description: Create the SNS interface endpoint when private Lambdas publish directly to SNS.
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Default: 'false'
+
+  EnableEventBridgeEndpoint:
+    Type: String
+    Description: Create the EventBridge interface endpoint when private Lambdas call its API.
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Default: 'false'
+
+  EnableStepFunctionsEndpoint:
+    Type: String
+    Description: Create the Step Functions interface endpoint when private Lambdas call its API.
+    AllowedValues:
+      - 'true'
+      - 'false'
+    Default: 'false'
 
 Resources:
 
@@ -302,7 +331,7 @@ Resources:
 
   VPCEndpointSecurityGroup:
     Type: AWS::EC2::SecurityGroup
-    Condition: CreateInterfaceEndpoints
+    Condition: CreateAnyInterfaceEndpoint
     Properties:
       GroupDescription: HTTPS from MediSlot Lambda functions to AWS endpoints
       VpcId: !Ref MediSlotVPC
@@ -318,7 +347,7 @@ Resources:
 
   LambdaToVPCEndpointEgress:
     Type: AWS::EC2::SecurityGroupEgress
-    Condition: CreateInterfaceEndpoints
+    Condition: CreateAnyInterfaceEndpoint
     Properties:
       GroupId: !Ref LambdaSecurityGroup
       Description: HTTPS to AWS interface endpoints
@@ -333,7 +362,7 @@ Resources:
 
   SSMInterfaceEndpoint:
     Type: AWS::EC2::VPCEndpoint
-    Condition: CreateInterfaceEndpoints
+    Condition: CreateSSMEndpoint
     Properties:
       VpcId: !Ref MediSlotVPC
       VpcEndpointType: Interface
@@ -345,9 +374,23 @@ Resources:
       SecurityGroupIds:
         - !Ref VPCEndpointSecurityGroup
 
+  SecretsManagerInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: CreateSecretsManagerEndpoint
+    Properties:
+      VpcId: !Ref MediSlotVPC
+      VpcEndpointType: Interface
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.secretsmanager
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateLambdaSubnetAZ1
+        - !Ref PrivateLambdaSubnetAZ2
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+
   SNSInterfaceEndpoint:
     Type: AWS::EC2::VPCEndpoint
-    Condition: CreateInterfaceEndpoints
+    Condition: CreateSNSEndpoint
     Properties:
       VpcId: !Ref MediSlotVPC
       VpcEndpointType: Interface
@@ -361,7 +404,7 @@ Resources:
 
   EventBridgeInterfaceEndpoint:
     Type: AWS::EC2::VPCEndpoint
-    Condition: CreateInterfaceEndpoints
+    Condition: CreateEventBridgeEndpoint
     Properties:
       VpcId: !Ref MediSlotVPC
       VpcEndpointType: Interface
@@ -375,7 +418,7 @@ Resources:
 
   StepFunctionsInterfaceEndpoint:
     Type: AWS::EC2::VPCEndpoint
-    Condition: CreateInterfaceEndpoints
+    Condition: CreateStepFunctionsEndpoint
     Properties:
       VpcId: !Ref MediSlotVPC
       VpcEndpointType: Interface
@@ -388,9 +431,32 @@ Resources:
         - !Ref VPCEndpointSecurityGroup
 
 Conditions:
-  CreateInterfaceEndpoints: !Equals
-    - !Ref EnableInterfaceEndpoints
+  CreateSSMEndpoint: !Equals
+    - !Ref EnableSSMEndpoint
     - 'true'
+
+  CreateSecretsManagerEndpoint: !Equals
+    - !Ref EnableSecretsManagerEndpoint
+    - 'true'
+
+  CreateSNSEndpoint: !Equals
+    - !Ref EnableSNSEndpoint
+    - 'true'
+
+  CreateEventBridgeEndpoint: !Equals
+    - !Ref EnableEventBridgeEndpoint
+    - 'true'
+
+  CreateStepFunctionsEndpoint: !Equals
+    - !Ref EnableStepFunctionsEndpoint
+    - 'true'
+
+  CreateAnyInterfaceEndpoint: !Or
+    - !Condition CreateSSMEndpoint
+    - !Condition CreateSecretsManagerEndpoint
+    - !Condition CreateSNSEndpoint
+    - !Condition CreateEventBridgeEndpoint
+    - !Condition CreateStepFunctionsEndpoint
 
 Outputs:
 

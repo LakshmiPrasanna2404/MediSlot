@@ -1,0 +1,39 @@
+﻿# Python cache and virtual environments
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# Generated packages and build output
+build/
+dist/
+auth-package/
+migration-build/
+pymysql-wheel/
+*.zip
+
+# Local environment and secrets
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+
+# Temporary test outputs
+auth-register-response.json
+auth-register-test.json
+register-response.json
+register-test.json
+users-migration-response.json
+
+# Local backups
+*.bak
+*.backup
+*.overwritten-backup.txt
+
+# Editor and OS files
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
