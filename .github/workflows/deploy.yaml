@@ -1,4 +1,3 @@
-
 name: MediSlot CloudFormation CI/CD Pipeline
 
 on:
@@ -39,6 +38,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           for template in \
             infrastructure/network-stack.yaml \
             infrastructure/data-stack.yaml \
@@ -55,16 +55,19 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           yamllint -d relaxed \
             infrastructure/network-stack.yaml \
             infrastructure/data-stack.yaml \
             infrastructure/iam-stack.yaml \
             infrastructure/auth-stack.yaml
 
-          cfn-lint infrastructure/network-stack.yaml
-          cfn-lint infrastructure/data-stack.yaml
-          cfn-lint infrastructure/iam-stack.yaml
-          cfn-lint infrastructure/auth-stack.yaml
+          # Fail on CloudFormation errors, but allow warnings such as W6001.
+          cfn-lint --non-zero-exit-code error \
+            infrastructure/network-stack.yaml \
+            infrastructure/data-stack.yaml \
+            infrastructure/iam-stack.yaml \
+            infrastructure/auth-stack.yaml
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -79,6 +82,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           for template in \
             infrastructure/network-stack.yaml \
             infrastructure/data-stack.yaml \
@@ -86,9 +90,10 @@ jobs:
             infrastructure/auth-stack.yaml
           do
             echo "Validating $template"
+
             aws cloudformation validate-template \
               --template-body "file://${template}" \
-              --region "$AWS_REGION"
+              --region "$AWS_REGION" >/dev/null
           done
 
   deploy-network:
@@ -108,6 +113,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           aws cloudformation deploy \
             --stack-name "medislot-${ENVIRONMENT}-network" \
             --template-file infrastructure/network-stack.yaml \
@@ -119,6 +125,20 @@ jobs:
               EnableStepFunctionsEndpoint=false \
             --no-fail-on-empty-changeset \
             --region "$AWS_REGION"
+
+      - name: Verify Network stack
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "medislot-${ENVIRONMENT}-network" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].StackStatus' \
+            --output text)
+
+          echo "Network stack status: $STATUS"
+          [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
 
   deploy-data:
     name: Deploy Existing Data Stack
@@ -137,12 +157,27 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           aws cloudformation deploy \
             --stack-name "medislot-${ENVIRONMENT}-data" \
             --template-file infrastructure/data-stack.yaml \
             --parameter-overrides Environment="${ENVIRONMENT}" \
             --no-fail-on-empty-changeset \
             --region "$AWS_REGION"
+
+      - name: Verify Data stack
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "medislot-${ENVIRONMENT}-data" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].StackStatus' \
+            --output text)
+
+          echo "Data stack status: $STATUS"
+          [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
 
   deploy-iam:
     name: Deploy Existing IAM Stack
@@ -161,6 +196,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           aws cloudformation deploy \
             --stack-name "medislot-${ENVIRONMENT}-iam" \
             --template-file infrastructure/iam-stack.yaml \
@@ -168,6 +204,20 @@ jobs:
             --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset \
             --region "$AWS_REGION"
+
+      - name: Verify IAM stack
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "medislot-${ENVIRONMENT}-iam" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].StackStatus' \
+            --output text)
+
+          echo "IAM stack status: $STATUS"
+          [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
 
   deploy-auth:
     name: Deploy Existing Auth Stack
@@ -193,10 +243,11 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           test -s lambda/auth/auth_handler.py
           test -s lambda/auth/requirements.txt
 
-          rm -rf build/auth
+          rm -rf build/auth auth.zip
           mkdir -p build/auth
 
           python -m pip install \
@@ -211,20 +262,26 @@ jobs:
             zip -qr ../../auth.zip .
           )
 
+          test -s auth.zip
+
       - name: Package Authorizer Lambda
         shell: bash
         run: |
           set -euo pipefail
+
           test -s lambda/authorizer/authorizer_handler.py
 
-          rm -rf build/authorizer
+          rm -rf build/authorizer authorizer.zip
           mkdir -p build/authorizer
+
           cp lambda/authorizer/authorizer_handler.py build/authorizer/
 
           (
             cd build/authorizer
             zip -qr ../../authorizer.zip .
           )
+
+          test -s authorizer.zip
 
       - name: Upload Lambda packages
         shell: bash
@@ -243,16 +300,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           yamllint -d relaxed infrastructure/auth-stack.yaml
-          cfn-lint infrastructure/auth-stack.yaml
+
+          cfn-lint --non-zero-exit-code error \
+            infrastructure/auth-stack.yaml
+
           aws cloudformation validate-template \
             --template-body file://infrastructure/auth-stack.yaml \
-            --region "$AWS_REGION"
+            --region "$AWS_REGION" >/dev/null
 
       - name: Deploy Auth
         shell: bash
         run: |
           set -euo pipefail
+
           aws cloudformation deploy \
             --stack-name "medislot-${ENVIRONMENT}-auth" \
             --template-file infrastructure/auth-stack.yaml \
@@ -269,6 +331,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
+
           STATUS=$(aws cloudformation describe-stacks \
             --stack-name "medislot-${ENVIRONMENT}-auth" \
             --region "$AWS_REGION" \
