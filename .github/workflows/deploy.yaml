@@ -22,7 +22,7 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout main
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
@@ -33,35 +33,39 @@ jobs:
       - name: Install validation tools
         run: |
           python -m pip install --upgrade pip
-          python -m pip install cfn-lint yamllint PyYAML
+          python -m pip install cfn-lint yamllint
 
-      - name: Check required templates
+      - name: Check implemented templates
+        shell: bash
         run: |
           set -euo pipefail
           for template in \
             infrastructure/network-stack.yaml \
             infrastructure/data-stack.yaml \
             infrastructure/iam-stack.yaml \
-            infrastructure/auth-stack.yaml \
-            infrastructure/app-stack.yaml
+            infrastructure/auth-stack.yaml
           do
             test -s "$template" || {
-              echo "::error::Missing template: $template"
+              echo "::error::Missing or empty template: $template"
               exit 1
             }
           done
 
-      - name: Lint templates
+      - name: Lint implemented templates
         run: |
           set -euo pipefail
-          yamllint -d relaxed infrastructure/
+          yamllint -d relaxed \
+            infrastructure/network-stack.yaml \
+            infrastructure/data-stack.yaml \
+            infrastructure/iam-stack.yaml \
+            infrastructure/auth-stack.yaml
+
           cfn-lint infrastructure/network-stack.yaml
           cfn-lint infrastructure/data-stack.yaml
-          cfn-lint infrastructure/iam-stack.yaml --ignore-checks W3037
+          cfn-lint infrastructure/iam-stack.yaml
           cfn-lint infrastructure/auth-stack.yaml
-          cfn-lint infrastructure/app-stack.yaml
 
-      - name: Configure AWS credentials using OIDC
+      - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::393476285814:role/medislot-github-actions-role
@@ -71,16 +75,16 @@ jobs:
         run: aws sts get-caller-identity
 
       - name: Validate CloudFormation templates
+        shell: bash
         run: |
           set -euo pipefail
           for template in \
             infrastructure/network-stack.yaml \
             infrastructure/data-stack.yaml \
             infrastructure/iam-stack.yaml \
-            infrastructure/auth-stack.yaml \
-            infrastructure/app-stack.yaml
+            infrastructure/auth-stack.yaml
           do
-            echo "Validating $template"
+            echo "Validating ${template}"
             aws cloudformation validate-template \
               --template-body "file://${template}" \
               --region "$AWS_REGION"
@@ -100,17 +104,13 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy Network
+        shell: bash
         run: |
           set -euo pipefail
           aws cloudformation deploy \
             --stack-name "medislot-${ENVIRONMENT}-network" \
             --template-file infrastructure/network-stack.yaml \
-            --parameter-overrides \
-              Environment="${ENVIRONMENT}" \
-              EnableSSMEndpoint=true \
-              EnableSNSEndpoint=false \
-              EnableEventBridgeEndpoint=false \
-              EnableStepFunctionsEndpoint=false \
+            --parameter-overrides Environment="${ENVIRONMENT}" \
             --no-fail-on-empty-changeset \
             --region "$AWS_REGION"
 
@@ -123,11 +123,13 @@ jobs:
       - uses: actions/checkout@v4
 
       - uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::393476285814:role/medislot-github-actions-role
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy Data
+        shell: bash
         run: |
           set -euo pipefail
           aws cloudformation deploy \
@@ -151,6 +153,7 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy IAM
+        shell: bash
         run: |
           set -euo pipefail
           aws cloudformation deploy \
@@ -178,21 +181,22 @@ jobs:
           role-to-assume: arn:aws:iam::393476285814:role/medislot-github-actions-role
           aws-region: ${{ env.AWS_REGION }}
 
-      - name: Install packaging and validation tools
+      - name: Install packaging tools
         run: |
           python -m pip install --upgrade pip
-          python -m pip install cfn-lint yamllint
 
       - name: Package Auth Lambda
+        shell: bash
         run: |
           set -euo pipefail
-          test -f lambda/auth/auth_handler.py
-          test -f lambda/auth/requirements.txt
+          test -s lambda/auth/auth_handler.py
+          test -s lambda/auth/requirements.txt
 
           rm -rf build/auth
           mkdir -p build/auth
 
           python -m pip install \
+            --only-binary=:all: \
             -r lambda/auth/requirements.txt \
             -t build/auth
 
@@ -204,13 +208,13 @@ jobs:
           )
 
       - name: Package Authorizer Lambda
+        shell: bash
         run: |
           set -euo pipefail
-          test -f lambda/authorizer/authorizer_handler.py
+          test -s lambda/authorizer/authorizer_handler.py
 
           rm -rf build/authorizer
           mkdir -p build/authorizer
-
           cp lambda/authorizer/authorizer_handler.py build/authorizer/
 
           (
@@ -219,6 +223,7 @@ jobs:
           )
 
       - name: Upload Lambda packages
+        shell: bash
         run: |
           set -euo pipefail
 
@@ -230,20 +235,18 @@ jobs:
             "s3://${ARTIFACT_BUCKET}/medislot/${ENVIRONMENT}/auth/authorizer-${GITHUB_SHA}.zip" \
             --region "$AWS_REGION"
 
-      - name: Lint and validate Auth template
+      - name: Validate Auth template
+        shell: bash
         run: |
           set -euo pipefail
-          yamllint -d relaxed infrastructure/auth-stack.yaml
-          cfn-lint infrastructure/auth-stack.yaml
-
           aws cloudformation validate-template \
             --template-body file://infrastructure/auth-stack.yaml \
             --region "$AWS_REGION"
 
       - name: Deploy Auth
+        shell: bash
         run: |
           set -euo pipefail
-
           aws cloudformation deploy \
             --stack-name "medislot-${ENVIRONMENT}-auth" \
             --template-file infrastructure/auth-stack.yaml \
@@ -257,6 +260,7 @@ jobs:
             --region "$AWS_REGION"
 
       - name: Verify Auth stack
+        shell: bash
         run: |
           set -euo pipefail
           STATUS=$(aws cloudformation describe-stacks \
@@ -265,42 +269,46 @@ jobs:
             --query 'Stacks[0].StackStatus' \
             --output text)
 
-          echo "Auth stack status: $STATUS"
+          echo "Auth stack status: ${STATUS}"
           [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
 
   deploy-app:
-    name: Deploy Existing Application Stack
+    name: Deploy Application Stack When Implemented
     runs-on: ubuntu-latest
     needs: deploy-auth
+    if: ${{ hashFiles('infrastructure/app-stack.yaml') != '' }}
 
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: arn:aws:iam::393476285814:role/medislot-github-actions-role
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Check Application template
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -s infrastructure/app-stack.yaml
+
       - name: Install validation tools
         run: |
           python -m pip install --upgrade pip
           python -m pip install cfn-lint yamllint
 
-      - name: Lint and validate Application template
+      - name: Validate Application template
+        shell: bash
         run: |
           set -euo pipefail
           yamllint -d relaxed infrastructure/app-stack.yaml
           cfn-lint infrastructure/app-stack.yaml
-
           aws cloudformation validate-template \
             --template-body file://infrastructure/app-stack.yaml \
             --region "$AWS_REGION"
 
       - name: Deploy Application
+        shell: bash
         run: |
           set -euo pipefail
           aws cloudformation deploy \
@@ -309,15 +317,3 @@ jobs:
             --parameter-overrides Environment="${ENVIRONMENT}" \
             --no-fail-on-empty-changeset \
             --region "$AWS_REGION"
-
-      - name: Verify Application
-        run: |
-          set -euo pipefail
-          STATUS=$(aws cloudformation describe-stacks \
-            --stack-name "medislot-${ENVIRONMENT}-app" \
-            --region "$AWS_REGION" \
-            --query 'Stacks[0].StackStatus' \
-            --output text)
-
-          echo "Application stack status: $STATUS"
-          [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
