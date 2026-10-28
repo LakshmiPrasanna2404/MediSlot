@@ -62,7 +62,7 @@ jobs:
             infrastructure/iam-stack.yaml \
             infrastructure/auth-stack.yaml
 
-          # Fail on CloudFormation errors, but allow warnings such as W6001.
+          # Fail on CloudFormation errors, but allow warnings.
           cfn-lint --non-zero-exit-code error \
             infrastructure/network-stack.yaml \
             infrastructure/data-stack.yaml \
@@ -162,6 +162,7 @@ jobs:
             --stack-name "medislot-${ENVIRONMENT}-data" \
             --template-file infrastructure/data-stack.yaml \
             --parameter-overrides Environment="${ENVIRONMENT}" \
+            --capabilities CAPABILITY_NAMED_IAM \
             --no-fail-on-empty-changeset \
             --region "$AWS_REGION"
 

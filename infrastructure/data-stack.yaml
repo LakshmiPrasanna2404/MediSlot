@@ -295,6 +295,113 @@ Resources:
               Bool:
                 aws:SecureTransport: 'false'
 
+  # ---------------------------------------------------------
+  # SSM database parameters bootstrap
+  # RDS owns the master secret; this custom resource copies its
+  # username and password into application SSM parameters.
+  # Password is stored as SecureString (not plain String).
+  # ---------------------------------------------------------
+
+  DatabaseParametersBootstrapRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub 'medislot-${Environment}-db-ssm-bootstrap-role'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub 'arn:${AWS::Partition}:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole'
+      Policies:
+        - PolicyName: DatabaseSecretToSSM
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadOnlyRDSManagedSecret
+                Effect: Allow
+                Action:
+                  - secretsmanager:GetSecretValue
+                Resource: !GetAtt MediSlotMySQL.MasterUserSecret.SecretArn
+              - Sid: WriteOnlyMediSlotDatabaseParameters
+                Effect: Allow
+                Action:
+                  - ssm:PutParameter
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/database/username'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/database/password'
+
+  DatabaseParametersBootstrapFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: !Sub 'medislot-${Environment}-db-ssm-bootstrap'
+      Runtime: python3.12
+      Handler: index.handler
+      Role: !GetAtt DatabaseParametersBootstrapRole.Arn
+      Timeout: 60
+      Code:
+        ZipFile: |
+          import json
+          import urllib.request
+          import boto3
+
+          sm = boto3.client('secretsmanager')
+          ssm = boto3.client('ssm')
+
+          def send(event, context, status, data=None, reason=None):
+              body = {
+                  'Status': status,
+                  'Reason': reason or ('See CloudWatch log stream: ' + context.log_stream_name),
+                  'PhysicalResourceId': event.get('PhysicalResourceId', 'medislot-db-ssm-parameters'),
+                  'StackId': event['StackId'],
+                  'RequestId': event['RequestId'],
+                  'LogicalResourceId': event['LogicalResourceId'],
+                  'Data': data or {}
+              }
+              encoded = json.dumps(body).encode('utf-8')
+              req = urllib.request.Request(event['ResponseURL'], data=encoded, method='PUT',
+                  headers={'content-type': '', 'content-length': str(len(encoded))})
+              urllib.request.urlopen(req, timeout=10).read()
+
+          def handler(event, context):
+              try:
+                  if event['RequestType'] == 'Delete':
+                      send(event, context, 'SUCCESS')
+                      return
+                  props = event['ResourceProperties']
+                  secret = sm.get_secret_value(SecretId=props['SecretArn'])
+                  creds = json.loads(secret['SecretString'])
+                  username = creds.get('username')
+                  password = creds.get('password')
+                  if not username or not password:
+                      raise ValueError('RDS secret did not contain username and password fields')
+                  ssm.put_parameter(Name=props['UsernameParameter'], Value=username,
+                                    Type='String', Overwrite=True)
+                  ssm.put_parameter(Name=props['PasswordParameter'], Value=password,
+                                    Type='SecureString', Overwrite=True)
+                  send(event, context, 'SUCCESS', {'UsernameParameter': props['UsernameParameter']})
+              except Exception as exc:
+                  # Do not include secret values in logs or the CloudFormation response.
+                  print('Database SSM parameter bootstrap failed:', type(exc).__name__)
+                  try:
+                      send(event, context, 'FAILED', reason='Database SSM parameter bootstrap failed; check Lambda logs.')
+                  except Exception:
+                      pass
+                  raise
+
+  DatabaseParametersBootstrap:
+    Type: Custom::MediSlotDatabaseParameters
+    DependsOn:
+      - MediSlotMySQL
+      - DatabaseParametersBootstrapRole
+    Properties:
+      ServiceToken: !GetAtt DatabaseParametersBootstrapFunction.Arn
+      SecretArn: !GetAtt MediSlotMySQL.MasterUserSecret.SecretArn
+      UsernameParameter: !Sub '/medislot/${Environment}/database/username'
+      PasswordParameter: !Sub '/medislot/${Environment}/database/password'
+
 Outputs:
   DBInstanceIdentifier:
     Description: RDS instance identifier

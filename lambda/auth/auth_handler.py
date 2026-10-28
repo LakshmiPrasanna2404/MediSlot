@@ -7,7 +7,7 @@ Routes:
     POST /refresh
     POST /logout
 
-Database credentials are read from the existing RDS-managed Secrets Manager secret.
+Database credentials are read from SSM Parameter Store SecureString parameters.
 Refresh tokens are single-use and tracked in DynamoDB.
 """
 
@@ -36,15 +36,13 @@ AWS_CLIENT_CONFIG = Config(
 )
 
 SSM = boto3.client("ssm", region_name=REGION, config=AWS_CLIENT_CONFIG)
-SECRETS_MANAGER = boto3.client(
-    "secretsmanager", region_name=REGION, config=AWS_CLIENT_CONFIG
-)
 DDB = boto3.resource("dynamodb", region_name=REGION, config=AWS_CLIENT_CONFIG)
 
 TOKEN_TABLE = DDB.Table(os.environ["TOKEN_REVOCATIONS_TABLE"])
 
 JWT_PARAMETER = os.environ["JWT_SECRET_PARAMETER"]
-DB_SECRET_ARN = os.environ["DB_SECRET_ARN"]
+DB_USERNAME_PARAMETER = os.environ["DB_USERNAME_PARAMETER"]
+DB_PASSWORD_PARAMETER = os.environ["DB_PASSWORD_PARAMETER"]
 
 DB_HOST = os.environ["DB_HOST"]
 DB_PORT = int(os.environ.get("DB_PORT", "3306"))
@@ -90,30 +88,32 @@ def jwt_secret():
 
 
 def db_credentials():
-    """Read and cache credentials from the existing RDS-managed secret."""
+    """Read and cache database credentials from SSM Parameter Store."""
     global _db_cache
 
     if _db_cache is None:
-        print("DIAG: Secrets Manager retrieval starting")
+        print("DIAG: Database credential SSM retrieval starting")
         try:
-            result = SECRETS_MANAGER.get_secret_value(SecretId=DB_SECRET_ARN)
-            print("DIAG: Secrets Manager retrieval succeeded")
+            username_result = SSM.get_parameter(
+                Name=DB_USERNAME_PARAMETER,
+                WithDecryption=True,
+            )
+            password_result = SSM.get_parameter(
+                Name=DB_PASSWORD_PARAMETER,
+                WithDecryption=True,
+            )
+            print("DIAG: Database credential SSM retrieval succeeded")
         except Exception as exc:
-            print(f"DIAG: Secrets Manager retrieval failed ({type(exc).__name__})")
+            print(f"DIAG: Database credential SSM retrieval failed ({type(exc).__name__})")
             raise
 
-        secret_string = result.get("SecretString")
-        if not secret_string:
-            raise RuntimeError("Database secret has no SecretString")
-
-        secret = json.loads(secret_string)
-        username = secret.get("username")
-        password = secret.get("password")
+        username = username_result["Parameter"].get("Value")
+        password = password_result["Parameter"].get("Value")
 
         if not isinstance(username, str) or not username:
-            raise RuntimeError("Database username is missing from the secret")
+            raise RuntimeError("Database username parameter is empty")
         if not isinstance(password, str) or not password:
-            raise RuntimeError("Database password is missing from the secret")
+            raise RuntimeError("Database password parameter is empty")
 
         _db_cache = {
             "username": username,
@@ -534,8 +534,8 @@ def handler_refresh(data):
 
         return response(200, issue_tokens(user))
 
-    except Exception:
-        print("Refresh failed; details omitted")
+    except Exception as exc:
+        print(f"DIAG: Refresh failed ({type(exc).__name__})")
         return response(500, {"error": "Internal server error"})
 
 

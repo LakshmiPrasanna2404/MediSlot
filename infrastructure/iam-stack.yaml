@@ -109,16 +109,6 @@ Resources:
                   - ec2:UnassignPrivateIpAddresses
                 Resource: '*'
 
-              # TEMPORARY: Existing auth code still reads the RDS master secret.
-              # Remove this permission after migrating auth to the dedicated
-              # application database credentials in SSM.
-              - Sid: ReadDatabaseMasterSecret
-                Effect: Allow
-                Action:
-                  - secretsmanager:GetSecretValue
-                Resource:
-                  Fn::ImportValue:
-                    Fn::Sub: medislot-${Environment}-db-master-secret-arn
 
   # Main application Lambda execution role
   AppLambdaRole:
