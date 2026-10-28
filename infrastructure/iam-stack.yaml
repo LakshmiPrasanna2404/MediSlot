@@ -97,6 +97,14 @@ Resources:
                   - dynamodb:UpdateItem
                 Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-token-revocations
 
+              - Sid: ManageRefreshTokenSessions
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-refresh-tokens
+
               # Lambda VPC network-interface permissions
               # These EC2 actions require Resource: '*'.
               - Sid: ManageLambdaNetworkInterfaces

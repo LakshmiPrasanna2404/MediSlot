@@ -1,5 +1,4 @@
-﻿
-"""MediSlot authentication Lambda.
+﻿"""MediSlot authentication Lambda.
 
 Routes:
     POST /register
@@ -8,7 +7,7 @@ Routes:
     POST /logout
 
 Database credentials are read from SSM Parameter Store SecureString parameters.
-Refresh tokens are single-use and tracked in DynamoDB.
+Refresh tokens are stored as SHA-256 hashes and rotated as single-use sessions in DynamoDB.
 """
 
 import base64
@@ -39,6 +38,7 @@ SSM = boto3.client("ssm", region_name=REGION, config=AWS_CLIENT_CONFIG)
 DDB = boto3.resource("dynamodb", region_name=REGION, config=AWS_CLIENT_CONFIG)
 
 TOKEN_TABLE = DDB.Table(os.environ["TOKEN_REVOCATIONS_TABLE"])
+REFRESH_TABLE = DDB.Table(os.environ["REFRESH_TOKENS_TABLE"])
 
 JWT_PARAMETER = os.environ["JWT_SECRET_PARAMETER"]
 DB_USERNAME_PARAMETER = os.environ["DB_USERNAME_PARAMETER"]
@@ -294,19 +294,85 @@ def verify_password(password, encoded):
         return False
 
 
+def refresh_token_hash(token):
+    """Return a non-reversible SHA-256 digest for a refresh token."""
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def store_refresh_token(token, claims):
+    """Store refresh-token metadata; never store the raw token."""
+    now = int(time.time())
+    REFRESH_TABLE.put_item(
+        Item={
+            "tokenHash": refresh_token_hash(token),
+            "userId": str(claims["sub"]),
+            "jti": claims["jti"],
+            "createdAt": now,
+            "expiresAt": int(claims["exp"]),
+        },
+        ConditionExpression="attribute_not_exists(tokenHash)",
+    )
+
+
+def consume_refresh_token(token, claims):
+    """Atomically delete a valid stored refresh token once."""
+    token_hash = refresh_token_hash(token)
+    now = int(time.time())
+    item = REFRESH_TABLE.get_item(
+        Key={"tokenHash": token_hash},
+        ConsistentRead=True,
+    ).get("Item")
+
+    if not item:
+        return False
+    if item.get("userId") != str(claims["sub"]):
+        return False
+    if item.get("jti") != claims["jti"]:
+        return False
+    if int(item.get("expiresAt", 0)) <= now:
+        return False
+
+    try:
+        REFRESH_TABLE.delete_item(
+            Key={"tokenHash": token_hash},
+            ConditionExpression=(
+                "jti = :jti AND userId = :uid AND expiresAt > :now"
+            ),
+            ExpressionAttributeValues={
+                ":jti": claims["jti"],
+                ":uid": str(claims["sub"]),
+                ":now": now,
+            },
+        )
+        return True
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            return False
+        raise
+
+
+def revoke_refresh_token(token):
+    """Remove a refresh-token session if the supplied token is valid."""
+    claims = decode_token(token, "refresh") if isinstance(token, str) else None
+    if not claims:
+        return False
+    return consume_refresh_token(token, claims)
+
+
 def issue_tokens(user):
-    """Issue an access token and a refresh token."""
+    """Issue an access token and persist a hash of the refresh token."""
     access_token, _ = create_token(
         user,
         typ="access",
         lifetime=900,
     )
 
-    refresh_token, _ = create_token(
+    refresh_token, refresh_claims = create_token(
         user,
         typ="refresh",
         lifetime=604800,
     )
+    store_refresh_token(refresh_token, refresh_claims)
 
     return {
         "token_type": "Bearer",
@@ -519,17 +585,12 @@ def handler_refresh(data):
                 {"error": "Invalid refresh token"},
             )
 
-        # A conditional write prevents two concurrent refreshes from
-        # consuming the same token successfully.
-        consumed = revoke_token_once(
-            claims["jti"],
-            claims["exp"],
-        )
-
+        # The raw token must match a stored hash and can be consumed once.
+        consumed = consume_refresh_token(token, claims)
         if not consumed:
             return response(
                 401,
-                {"error": "Refresh token already used or revoked"},
+                {"error": "Refresh token is not active or was already used"},
             )
 
         return response(200, issue_tokens(user))
@@ -539,8 +600,8 @@ def handler_refresh(data):
         return response(500, {"error": "Internal server error"})
 
 
-def handler_logout(event):
-    """Revoke the presented access token."""
+def handler_logout(event, data=None):
+    """Revoke the access token and, if supplied, the refresh session."""
     headers = {
         str(key).lower(): value
         for key, value in (event.get("headers") or {}).items()
@@ -570,6 +631,11 @@ def handler_logout(event):
         )
 
     try:
+        # The client may include refresh_token in the logout JSON body.
+        refresh_token = (data or {}).get("refresh_token")
+        if isinstance(refresh_token, str) and refresh_token:
+            revoke_refresh_token(refresh_token)
+
         revoked = revoke_token_once(
             claims["jti"],
             claims["exp"],
@@ -613,7 +679,6 @@ def lambda_handler(event, context):
         return handler_refresh(data)
 
     if path.endswith("/logout"):
-        return handler_logout(event)
+        return handler_logout(event, data)
 
     return response(404, {"error": "Route not found"})
-

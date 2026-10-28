@@ -1,3 +1,4 @@
+
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   MediSlot authentication stack with patient registration,
@@ -14,7 +15,7 @@ Parameters:
 
   AuthCodeS3Bucket:
     Type: String
-    Description: S3 bucket containing the authentication Lambda package
+    Description: S3 bucket containing the packaged Python authentication Lambda code
 
   AuthCodeS3Key:
     Type: String
@@ -22,7 +23,7 @@ Parameters:
 
   AuthorizerCodeS3Bucket:
     Type: String
-    Description: S3 bucket containing the authorizer Lambda package
+    Description: S3 bucket containing the packaged Python authorizer Lambda code
 
   AuthorizerCodeS3Key:
     Type: String
@@ -55,6 +56,7 @@ Parameters:
       - 90
 
 Resources:
+  # Authentication Lambda logs
   AuthFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -66,6 +68,7 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  # JWT Authorizer Lambda logs
   AuthorizerFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -77,6 +80,7 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  # Authentication Lambda
   AuthFunction:
     Type: AWS::Lambda::Function
     DependsOn:
@@ -124,6 +128,9 @@ Resources:
           TOKEN_REVOCATIONS_TABLE:
             Fn::ImportValue:
               Fn::Sub: medislot-${Environment}-token-revocations-table-name
+          REFRESH_TOKENS_TABLE:
+            Fn::ImportValue:
+              Fn::Sub: medislot-${Environment}-refresh-tokens-table-name
           JWT_SECRET_PARAMETER: !Sub /medislot/${Environment}/auth/jwt-secret
       Tags:
         - Key: Project
@@ -131,6 +138,7 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  # JWT Lambda Authorizer
   AuthorizerFunction:
     Type: AWS::Lambda::Function
     DependsOn:
@@ -195,6 +203,12 @@ Outputs:
     Value:
       Fn::ImportValue:
         Fn::Sub: medislot-${Environment}-token-revocations-table-name
+
+  RefreshTokensTableName:
+    Description: DynamoDB table for hashed refresh-token sessions
+    Value:
+      Fn::ImportValue:
+        Fn::Sub: medislot-${Environment}-refresh-tokens-table-name
 
   AuthDatabaseEndpoint:
     Description: Existing private RDS endpoint

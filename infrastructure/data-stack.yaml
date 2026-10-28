@@ -187,6 +187,37 @@ Resources:
           Value: !Ref Environment
 
   # ---------------------------------------------------------
+  # DynamoDB: active refresh-token sessions
+  # Store SHA-256 token hashes, never raw refresh tokens.
+  # ---------------------------------------------------------
+
+  RefreshTokensTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub 'medislot-${Environment}-refresh-tokens'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: tokenHash
+          AttributeType: S
+      KeySchema:
+        - AttributeName: tokenHash
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ---------------------------------------------------------
   # DynamoDB: idempotency keys for safe retry handling
   # ---------------------------------------------------------
 
@@ -462,6 +493,18 @@ Outputs:
     Value: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-token-revocations'
     Export:
       Name: !Sub 'medislot-${Environment}-token-revocations-table-arn'
+
+  RefreshTokensTableName:
+    Description: DynamoDB table for hashed refresh-token sessions
+    Value: !Ref RefreshTokensTable
+    Export:
+      Name: !Sub 'medislot-${Environment}-refresh-tokens-table-name'
+
+  RefreshTokensTableArn:
+    Description: ARN of the refresh-token sessions table
+    Value: !GetAtt RefreshTokensTable.Arn
+    Export:
+      Name: !Sub 'medislot-${Environment}-refresh-tokens-table-arn'
 
   IdempotencyTableName:
     Value: !Ref IdempotencyTable
