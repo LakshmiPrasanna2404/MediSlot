@@ -1,0 +1,97 @@
+
+AWSTemplateFormatVersion: '2010-09-09'
+Description: MediSlot HTTP API Gateway for authentication endpoints.
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues:
+      - dev
+      - prod
+    Default: dev
+
+Resources:
+  AuthHttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub medislot-${Environment}-auth-api
+      Description: MediSlot authentication API
+      ProtocolType: HTTP
+      Tags:
+        Project: MediSlot
+        Environment: !Ref Environment
+
+  AuthApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref AuthHttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri:
+        Fn::ImportValue:
+          Fn::Sub: medislot-${Environment}-auth-function-arn
+      PayloadFormatVersion: '2.0'
+      TimeoutInMillis: 15000
+
+  RegisterRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref AuthHttpApi
+      RouteKey: 'POST /register'
+      Target: !Sub integrations/${AuthApiIntegration}
+
+  LoginRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref AuthHttpApi
+      RouteKey: 'POST /login'
+      Target: !Sub integrations/${AuthApiIntegration}
+
+  RefreshRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref AuthHttpApi
+      RouteKey: 'POST /refresh'
+      Target: !Sub integrations/${AuthApiIntegration}
+
+  LogoutRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref AuthHttpApi
+      RouteKey: 'POST /logout'
+      Target: !Sub integrations/${AuthApiIntegration}
+
+  AuthApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Fn::ImportValue:
+          Fn::Sub: medislot-${Environment}-auth-function-arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub
+        - arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/*/*
+        - ApiId: !Ref AuthHttpApi
+
+  AuthApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref AuthHttpApi
+      StageName: '$default'
+      AutoDeploy: true
+      Tags:
+        Project: MediSlot
+        Environment: !Ref Environment
+
+Outputs:
+  AuthApiUrl:
+    Description: Base URL for authentication requests
+    Value: !GetAtt AuthHttpApi.ApiEndpoint
+    Export:
+      Name: !Sub medislot-${Environment}-auth-api-url
+
+  AuthApiId:
+    Description: Authentication API Gateway ID
+    Value: !Ref AuthHttpApi
+    Export:
+      Name: !Sub medislot-${Environment}-auth-api-id

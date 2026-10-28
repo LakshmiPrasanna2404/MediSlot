@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  MediSlot authentication stack for patient registration,
+  MediSlot authentication stack with patient registration,
   login, JWT refresh, logout, and JWT authorization.
 
 Parameters:
@@ -14,7 +14,7 @@ Parameters:
 
   AuthCodeS3Bucket:
     Type: String
-    Description: S3 bucket containing the packaged Python authentication Lambda code
+    Description: S3 bucket containing the authentication Lambda package
 
   AuthCodeS3Key:
     Type: String
@@ -22,7 +22,7 @@ Parameters:
 
   AuthorizerCodeS3Bucket:
     Type: String
-    Description: S3 bucket containing the packaged Python authorizer Lambda code
+    Description: S3 bucket containing the authorizer Lambda package
 
   AuthorizerCodeS3Key:
     Type: String
@@ -55,7 +55,6 @@ Parameters:
       - 90
 
 Resources:
-  # Authentication Lambda logs
   AuthFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -67,7 +66,6 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # JWT Authorizer Lambda logs
   AuthorizerFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -79,8 +77,6 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # Authentication Lambda
-  # Database credentials are read from SSM Parameter Store.
   AuthFunction:
     Type: AWS::Lambda::Function
     DependsOn:
@@ -135,7 +131,6 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # JWT Lambda Authorizer
   AuthorizerFunction:
     Type: AWS::Lambda::Function
     DependsOn:
@@ -184,13 +179,13 @@ Outputs:
       Name: !Sub medislot-${Environment}-auth-function-arn
 
   AuthorizerFunctionName:
-    Description: JWT authorizer Lambda function name
+    Description: JWT authorizer function name
     Value: !Ref AuthorizerFunction
     Export:
       Name: !Sub medislot-${Environment}-authorizer-function-name
 
   AuthorizerFunctionArn:
-    Description: JWT authorizer Lambda function ARN
+    Description: JWT authorizer function ARN
     Value: !GetAtt AuthorizerFunction.Arn
     Export:
       Name: !Sub medislot-${Environment}-authorizer-function-arn

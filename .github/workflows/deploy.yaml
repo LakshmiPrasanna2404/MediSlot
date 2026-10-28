@@ -43,7 +43,8 @@ jobs:
             infrastructure/network-stack.yaml \
             infrastructure/data-stack.yaml \
             infrastructure/iam-stack.yaml \
-            infrastructure/auth-stack.yaml
+            infrastructure/auth-stack.yaml \
+            infrastructure/api-stack.yaml
           do
             if [[ ! -s "$template" ]]; then
               echo "::error::Missing or empty template: $template"
@@ -60,14 +61,15 @@ jobs:
             infrastructure/network-stack.yaml \
             infrastructure/data-stack.yaml \
             infrastructure/iam-stack.yaml \
-            infrastructure/auth-stack.yaml
+            infrastructure/auth-stack.yaml \
+            infrastructure/api-stack.yaml
 
-          # Fail on CloudFormation errors, but allow warnings.
           cfn-lint --non-zero-exit-code error \
             infrastructure/network-stack.yaml \
             infrastructure/data-stack.yaml \
             infrastructure/iam-stack.yaml \
-            infrastructure/auth-stack.yaml
+            infrastructure/auth-stack.yaml \
+            infrastructure/api-stack.yaml
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
@@ -87,7 +89,8 @@ jobs:
             infrastructure/network-stack.yaml \
             infrastructure/data-stack.yaml \
             infrastructure/iam-stack.yaml \
-            infrastructure/auth-stack.yaml
+            infrastructure/auth-stack.yaml \
+            infrastructure/api-stack.yaml
           do
             echo "Validating $template"
 
@@ -97,7 +100,7 @@ jobs:
           done
 
   deploy-network:
-    name: Deploy Existing Network Stack
+    name: Deploy Network Stack
     runs-on: ubuntu-latest
     needs: lint-and-validate
 
@@ -141,7 +144,7 @@ jobs:
           [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
 
   deploy-data:
-    name: Deploy Existing Data Stack
+    name: Deploy Data Stack
     runs-on: ubuntu-latest
     needs: deploy-network
 
@@ -181,7 +184,7 @@ jobs:
           [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
 
   deploy-iam:
-    name: Deploy Existing IAM Stack
+    name: Deploy IAM Stack
     runs-on: ubuntu-latest
     needs: deploy-data
 
@@ -221,7 +224,7 @@ jobs:
           [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
 
   deploy-auth:
-    name: Deploy Existing Auth Stack
+    name: Deploy Auth Stack
     runs-on: ubuntu-latest
     needs: deploy-iam
 
@@ -343,3 +346,61 @@ jobs:
 
           echo "Auth stack status: $STATUS"
           [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
+
+  deploy-api:
+    name: Deploy API Stack
+    runs-on: ubuntu-latest
+    needs: deploy-auth
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::393476285814:role/medislot-github-actions-role
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Validate API template
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s infrastructure/api-stack.yaml
+
+          aws cloudformation validate-template \
+            --template-body file://infrastructure/api-stack.yaml \
+            --region "$AWS_REGION" >/dev/null
+
+      - name: Deploy API
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          aws cloudformation deploy \
+            --stack-name "medislot-${ENVIRONMENT}-api" \
+            --template-file infrastructure/api-stack.yaml \
+            --parameter-overrides Environment="${ENVIRONMENT}" \
+            --no-fail-on-empty-changeset \
+            --region "$AWS_REGION"
+
+      - name: Verify API stack and display URL
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "medislot-${ENVIRONMENT}-api" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].StackStatus' \
+            --output text)
+
+          echo "API stack status: $STATUS"
+          [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
+
+          API_URL=$(aws cloudformation describe-stacks \
+            --stack-name "medislot-${ENVIRONMENT}-api" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='AuthApiUrl'].OutputValue | [0]" \
+            --output text)
+
+          echo "MediSlot API URL: $API_URL"
