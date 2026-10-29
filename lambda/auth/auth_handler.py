@@ -16,6 +16,7 @@ import hmac
 import json
 import os
 import time
+import traceback
 import uuid
 
 import boto3
@@ -322,11 +323,17 @@ def store_refresh_token(token, claims):
         )
         print("DIAG: Refresh-token DynamoDB write succeeded")
     except ClientError as exc:
-        error_code = exc.response.get("Error", {}).get("Code", "Unknown")
-        print(f"DIAG: Refresh-token DynamoDB write failed ({error_code})")
+        error = exc.response.get("Error", {})
+        print(
+            "DIAG: Refresh-token DynamoDB write failed "
+            f"code={error.get('Code', 'Unknown')} "
+            f"message={error.get('Message', 'No message')}"
+        )
+        traceback.print_exc()
         raise
     except Exception as exc:
-        print(f"DIAG: Refresh-token DynamoDB write failed ({type(exc).__name__})")
+        print(f"DIAG: Refresh-token DynamoDB write failed ({type(exc).__name__}): {exc}")
+        traceback.print_exc()
         raise
 
 
@@ -534,7 +541,9 @@ def handler_login(data):
                 {"error": "Invalid email or password"},
             )
 
+        print("DIAG: Credentials accepted; issuing access and refresh tokens")
         result = issue_tokens(user)
+        print("DIAG: Token issuance and refresh-token persistence completed")
         result["user"] = {
             "user_id": str(user["user_id"]),
             "full_name": user["full_name"],
@@ -545,9 +554,9 @@ def handler_login(data):
         return response(200, result)
 
     except Exception as exc:
-        # Keep the API response generic, but log the exception type so a failed
-        # DynamoDB write or another backend error can be diagnosed in CloudWatch.
-        print(f"DIAG: Login failed ({type(exc).__name__})")
+        # Keep client responses generic, but log the actual backend failure in CloudWatch.
+        print(f"DIAG: Login failed ({type(exc).__name__}): {exc}")
+        traceback.print_exc()
         return response(500, {"error": "Internal server error"})
 
 
@@ -614,7 +623,8 @@ def handler_refresh(data):
         return response(200, issue_tokens(user))
 
     except Exception as exc:
-        print(f"DIAG: Refresh failed ({type(exc).__name__})")
+        print(f"DIAG: Refresh failed ({type(exc).__name__}): {exc}")
+        traceback.print_exc()
         return response(500, {"error": "Internal server error"})
 
 
@@ -670,8 +680,9 @@ def handler_logout(event, data=None):
             {"message": "Logged out successfully"},
         )
 
-    except Exception:
-        print("Logout failed; details omitted")
+    except Exception as exc:
+        print(f"DIAG: Logout failed ({type(exc).__name__}): {exc}")
+        traceback.print_exc()
         return response(500, {"error": "Internal server error"})
 
 
