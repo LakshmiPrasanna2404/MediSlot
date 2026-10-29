@@ -300,18 +300,34 @@ def refresh_token_hash(token):
 
 
 def store_refresh_token(token, claims):
-    """Store refresh-token metadata; never store the raw token."""
+    """Store refresh-token metadata; never store the raw token.
+
+    DynamoDB items support these attributes without predefining SQL-style
+    columns. The table's only required key is tokenHash.
+    """
     now = int(time.time())
-    REFRESH_TABLE.put_item(
-        Item={
-            "tokenHash": refresh_token_hash(token),
-            "userId": str(claims["sub"]),
-            "jti": claims["jti"],
-            "createdAt": now,
-            "expiresAt": int(claims["exp"]),
-        },
-        ConditionExpression="attribute_not_exists(tokenHash)",
-    )
+    item = {
+        "tokenHash": refresh_token_hash(token),
+        "userId": str(claims["sub"]),
+        "jti": claims["jti"],
+        "createdAt": now,
+        "expiresAt": int(claims["exp"]),
+    }
+
+    print("DIAG: Refresh-token DynamoDB write starting")
+    try:
+        REFRESH_TABLE.put_item(
+            Item=item,
+            ConditionExpression="attribute_not_exists(tokenHash)",
+        )
+        print("DIAG: Refresh-token DynamoDB write succeeded")
+    except ClientError as exc:
+        error_code = exc.response.get("Error", {}).get("Code", "Unknown")
+        print(f"DIAG: Refresh-token DynamoDB write failed ({error_code})")
+        raise
+    except Exception as exc:
+        print(f"DIAG: Refresh-token DynamoDB write failed ({type(exc).__name__})")
+        raise
 
 
 def consume_refresh_token(token, claims):
@@ -528,8 +544,10 @@ def handler_login(data):
 
         return response(200, result)
 
-    except Exception:
-        print("Login failed; details omitted")
+    except Exception as exc:
+        # Keep the API response generic, but log the exception type so a failed
+        # DynamoDB write or another backend error can be diagnosed in CloudWatch.
+        print(f"DIAG: Login failed ({type(exc).__name__})")
         return response(500, {"error": "Internal server error"})
 
 
