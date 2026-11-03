@@ -109,68 +109,6 @@ Resources:
           Value: !Ref Environment
 
   # ---------------------------------------------------------
-  # DynamoDB 1: refresh tokens
-  # PK: tokenHash | TTL: expiresAt
-  # ---------------------------------------------------------
-
-  RefreshTokensTable:
-    Type: AWS::DynamoDB::Table
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      TableName: !Sub 'medislot-${Environment}-refresh-tokens'
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions:
-        - AttributeName: tokenHash
-          AttributeType: S
-      KeySchema:
-        - AttributeName: tokenHash
-          KeyType: HASH
-      TimeToLiveSpecification:
-        AttributeName: expiresAt
-        Enabled: true
-      SSESpecification:
-        SSEEnabled: true
-      PointInTimeRecoverySpecification:
-        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
-      Tags:
-        - Key: Project
-          Value: MediSlot
-        - Key: Environment
-          Value: !Ref Environment
-
-  # ---------------------------------------------------------
-  # DynamoDB 2: token revocations
-  # PK: jti | TTL: expiresAt
-  # ---------------------------------------------------------
-
-  TokenRevocationsTable:
-    Type: AWS::DynamoDB::Table
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      TableName: !Sub 'medislot-${Environment}-token-revocations'
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions:
-        - AttributeName: jti
-          AttributeType: S
-      KeySchema:
-        - AttributeName: jti
-          KeyType: HASH
-      TimeToLiveSpecification:
-        AttributeName: expiresAt
-        Enabled: true
-      SSESpecification:
-        SSEEnabled: true
-      PointInTimeRecoverySpecification:
-        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
-      Tags:
-        - Key: Project
-          Value: MediSlot
-        - Key: Environment
-          Value: !Ref Environment
-
-  # ---------------------------------------------------------
   # DynamoDB 3: slots
   # PK: slotId
   # GSI_Doctor_Slots: doctorId (PK) + startTime (SK)
@@ -202,8 +140,6 @@ Resources:
               KeyType: RANGE
           Projection:
             ProjectionType: ALL
-      SSESpecification:
-        SSEEnabled: true
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: !If [IsProd, true, false]
       Tags:
@@ -238,8 +174,6 @@ Resources:
       TimeToLiveSpecification:
         AttributeName: holdExpiresAt
         Enabled: true
-      SSESpecification:
-        SSEEnabled: true
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: !If [IsProd, true, false]
       Tags:
@@ -270,8 +204,6 @@ Resources:
           KeyType: HASH
         - AttributeName: joinedAtPatientId
           KeyType: RANGE
-      SSESpecification:
-        SSEEnabled: true
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: !If [IsProd, true, false]
       Tags:
@@ -326,39 +258,6 @@ Resources:
       TimeToLiveSpecification:
         AttributeName: expiresAt
         Enabled: true
-      SSESpecification:
-        SSEEnabled: true
-      PointInTimeRecoverySpecification:
-        PointInTimeRecoveryEnabled: !If [IsProd, true, false]
-      Tags:
-        - Key: Project
-          Value: MediSlot
-        - Key: Environment
-          Value: !Ref Environment
-
-  # ---------------------------------------------------------
-  # DynamoDB 7: idempotency
-  # PK: idempotencyKey | TTL: expiresAt
-  # ---------------------------------------------------------
-
-  IdempotencyTable:
-    Type: AWS::DynamoDB::Table
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      TableName: !Sub 'medislot-${Environment}-idempotency'
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions:
-        - AttributeName: idempotencyKey
-          AttributeType: S
-      KeySchema:
-        - AttributeName: idempotencyKey
-          KeyType: HASH
-      TimeToLiveSpecification:
-        AttributeName: expiresAt
-        Enabled: true
-      SSESpecification:
-        SSEEnabled: true
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: !If [IsProd, true, false]
       Tags:
@@ -385,8 +284,6 @@ Resources:
       KeySchema:
         - AttributeName: dispatchKey
           KeyType: HASH
-      SSESpecification:
-        SSEEnabled: true
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: !If [IsProd, true, false]
       Tags:
@@ -475,22 +372,26 @@ Outputs:
       Name: !Sub 'medislot-${Environment}-db-master-secret-arn'
 
   RefreshTokensTableName:
-    Value: !Ref RefreshTokensTable
+    Description: Name of the pre-existing refresh tokens table (kept outside this stack to avoid replacement).
+    Value: !Sub 'medislot-${Environment}-refresh-tokens'
     Export:
       Name: !Sub 'medislot-${Environment}-refresh-tokens-table-name'
 
   RefreshTokensTableArn:
-    Value: !GetAtt RefreshTokensTable.Arn
+    Description: ARN of the pre-existing refresh tokens table.
+    Value: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-refresh-tokens'
     Export:
       Name: !Sub 'medislot-${Environment}-refresh-tokens-table-arn'
 
   TokenRevocationsTableName:
-    Value: !Ref TokenRevocationsTable
+    Description: Name of the pre-existing token revocations table (kept outside this stack to avoid replacement).
+    Value: !Sub 'medislot-${Environment}-token-revocations'
     Export:
       Name: !Sub 'medislot-${Environment}-token-revocations-table-name'
 
   TokenRevocationsTableArn:
-    Value: !GetAtt TokenRevocationsTable.Arn
+    Description: ARN of the pre-existing token revocations table.
+    Value: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-token-revocations'
     Export:
       Name: !Sub 'medislot-${Environment}-token-revocations-table-arn'
 
@@ -535,12 +436,14 @@ Outputs:
       Name: !Sub 'medislot-${Environment}-hold-offers-table-arn'
 
   IdempotencyTableName:
-    Value: !Ref IdempotencyTable
+    Description: Name of the pre-existing idempotency table (kept outside this stack to avoid replacement).
+    Value: !Sub 'medislot-${Environment}-idempotency'
     Export:
       Name: !Sub 'medislot-${Environment}-idempotency-table-name'
 
   IdempotencyTableArn:
-    Value: !GetAtt IdempotencyTable.Arn
+    Description: ARN of the pre-existing idempotency table.
+    Value: !Sub 'arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-idempotency'
     Export:
       Name: !Sub 'medislot-${Environment}-idempotency-table-arn'
 
