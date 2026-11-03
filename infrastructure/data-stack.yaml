@@ -1,7 +1,8 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  MediSlot data stack. Creates the private MySQL database and doctor profile
-  files bucket, and exports references to existing DynamoDB tables.
+  MediSlot data stack. Creates the private MySQL database, applies the
+  transport-security policy to the existing doctor profile files bucket,
+  and exports references to existing DynamoDB tables.
 
 Parameters:
   Environment:
@@ -102,36 +103,12 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  DoctorProfileFilesBucket:
-    Type: AWS::S3::Bucket
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      BucketName: !Sub 'medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-doctor-profile-files'
-      PublicAccessBlockConfiguration:
-        BlockPublicAcls: true
-        BlockPublicPolicy: true
-        IgnorePublicAcls: true
-        RestrictPublicBuckets: true
-      BucketEncryption:
-        ServerSideEncryptionConfiguration:
-          - ServerSideEncryptionByDefault:
-              SSEAlgorithm: AES256
-      VersioningConfiguration:
-        Status: Enabled
-      OwnershipControls:
-        Rules:
-          - ObjectOwnership: BucketOwnerEnforced
-      Tags:
-        - Key: Project
-          Value: MediSlot
-        - Key: Environment
-          Value: !Ref Environment
-
+  # This bucket already exists in the AWS account. Do not try to create it again.
+  # CloudFormation manages only the bucket policy.
   DoctorProfileFilesBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
-      Bucket: !Ref DoctorProfileFilesBucket
+      Bucket: !Sub 'medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-doctor-profile-files'
       PolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -140,8 +117,8 @@ Resources:
             Principal: '*'
             Action: 's3:*'
             Resource:
-              - !Sub '${DoctorProfileFilesBucket.Arn}'
-              - !Sub '${DoctorProfileFilesBucket.Arn}/*'
+              - !Sub 'arn:${AWS::Partition}:s3:::medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-doctor-profile-files'
+              - !Sub 'arn:${AWS::Partition}:s3:::medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-doctor-profile-files/*'
             Condition:
               Bool:
                 aws:SecureTransport: 'false'
@@ -274,13 +251,13 @@ Outputs:
       Name: !Sub 'medislot-${Environment}-dispatch-log-table-arn'
 
   DoctorProfileFilesBucketName:
-    Description: Doctor profile files bucket created by this stack.
-    Value: !Ref DoctorProfileFilesBucket
+    Description: Existing doctor profile files bucket used by this stack.
+    Value: !Sub 'medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-doctor-profile-files'
     Export:
       Name: !Sub 'medislot-${Environment}-doctor-files-bucket-name'
 
   DoctorProfileFilesBucketArn:
-    Description: Doctor profile files bucket ARN.
-    Value: !GetAtt DoctorProfileFilesBucket.Arn
+    Description: Existing doctor profile files bucket ARN.
+    Value: !Sub 'arn:${AWS::Partition}:s3:::medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-doctor-profile-files'
     Export:
       Name: !Sub 'medislot-${Environment}-doctor-files-bucket-arn'
