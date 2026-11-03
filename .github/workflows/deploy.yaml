@@ -138,10 +138,6 @@ jobs:
             --template-file infrastructure/network-stack.yaml \
             --parameter-overrides \
               Environment="${ENVIRONMENT}" \
-              EnableSSMEndpoint=true \
-              EnableSNSEndpoint=false \
-              EnableEventBridgeEndpoint=false \
-              EnableStepFunctionsEndpoint=false \
             --no-fail-on-empty-changeset \
             --region "$AWS_REGION"
 

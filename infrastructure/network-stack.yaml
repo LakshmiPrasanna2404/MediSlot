@@ -13,35 +13,38 @@ Parameters:
 
   VPCCidr:
     Type: String
+    Default: 10.0.0.0/16
     Description: CIDR block for the MediSlot VPC.
 
   PublicSubnetCidr:
     Type: String
+    Default: 10.0.1.0/24
     Description: CIDR block for the public EC2 subnet.
 
   PrivateLambdaSubnetAZ1Cidr:
     Type: String
+    Default: 10.0.2.0/24
     Description: CIDR block for the first private Lambda subnet.
 
   PrivateLambdaSubnetAZ2Cidr:
     Type: String
+    Default: 10.0.3.0/24
     Description: CIDR block for the second private Lambda subnet.
 
   PrivateRDSSubnetAZ1Cidr:
     Type: String
+    Default: 10.0.4.0/24
     Description: CIDR block for the first private RDS subnet.
 
   PrivateRDSSubnetAZ2Cidr:
     Type: String
+    Default: 10.0.5.0/24
     Description: CIDR block for the second private RDS subnet.
-
-  DynamoDBPrefixListId:
-    Type: String
-    Description: Region-specific AWS-managed DynamoDB prefix-list ID for the VPC security-group egress rule.
 
   EnableSSMEndpoint:
     Type: String
     Description: Create the SSM interface endpoint for private Lambda access to Parameter Store.
+    Default: 'true'
     AllowedValues:
       - 'true'
       - 'false'
@@ -49,6 +52,7 @@ Parameters:
   EnableCloudWatchLogsEndpoint:
     Type: String
     Description: Create the CloudWatch Logs interface endpoint for VPC-connected Lambda logging without NAT.
+    Default: 'true'
     AllowedValues:
       - 'true'
       - 'false'
@@ -56,6 +60,7 @@ Parameters:
   EnableSecretsManagerEndpoint:
     Type: String
     Description: Create the Secrets Manager interface endpoint for private Lambda access to database credentials.
+    Default: 'true'
     AllowedValues:
       - 'true'
       - 'false'
@@ -63,6 +68,7 @@ Parameters:
   EnableSNSEndpoint:
     Type: String
     Description: Create the SNS interface endpoint for private Lambda notification publishing.
+    Default: 'false'
     AllowedValues:
       - 'true'
       - 'false'
@@ -70,6 +76,7 @@ Parameters:
   EnableEventBridgeEndpoint:
     Type: String
     Description: Create the EventBridge interface endpoint for private Lambda event publishing.
+    Default: 'false'
     AllowedValues:
       - 'true'
       - 'false'
@@ -77,6 +84,7 @@ Parameters:
   EnableStepFunctionsEndpoint:
     Type: String
     Description: Create the Step Functions interface endpoint for private Lambda workflow calls.
+    Default: 'false'
     AllowedValues:
       - 'true'
       - 'false'
@@ -384,16 +392,6 @@ Resources:
       FromPort: 443
       ToPort: 443
       DestinationSecurityGroupId: !Ref VPCEndpointSecurityGroup
-
-  LambdaToDynamoDBEgress:
-    Type: AWS::EC2::SecurityGroupEgress
-    Properties:
-      GroupId: !Ref LambdaSecurityGroup
-      Description: HTTPS to DynamoDB gateway endpoint
-      IpProtocol: tcp
-      FromPort: 443
-      ToPort: 443
-      DestinationPrefixListId: !Ref DynamoDBPrefixListId
 
   # --------------------------------------------------
   # 8. Optional paid interface endpoints
