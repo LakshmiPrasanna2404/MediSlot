@@ -10,7 +10,34 @@ Parameters:
     AllowedValues:
       - dev
       - prod
-    Default: dev
+
+  VPCCidr:
+    Type: String
+    Description: CIDR block for the MediSlot VPC.
+
+  PublicSubnetCidr:
+    Type: String
+    Description: CIDR block for the public EC2 subnet.
+
+  PrivateLambdaSubnetAZ1Cidr:
+    Type: String
+    Description: CIDR block for the first private Lambda subnet.
+
+  PrivateLambdaSubnetAZ2Cidr:
+    Type: String
+    Description: CIDR block for the second private Lambda subnet.
+
+  PrivateRDSSubnetAZ1Cidr:
+    Type: String
+    Description: CIDR block for the first private RDS subnet.
+
+  PrivateRDSSubnetAZ2Cidr:
+    Type: String
+    Description: CIDR block for the second private RDS subnet.
+
+  DynamoDBPrefixListId:
+    Type: String
+    Description: Region-specific AWS-managed DynamoDB prefix-list ID for the VPC security-group egress rule.
 
   EnableSSMEndpoint:
     Type: String
@@ -18,7 +45,13 @@ Parameters:
     AllowedValues:
       - 'true'
       - 'false'
-    Default: 'false'
+
+  EnableCloudWatchLogsEndpoint:
+    Type: String
+    Description: Create the CloudWatch Logs interface endpoint for VPC-connected Lambda logging without NAT.
+    AllowedValues:
+      - 'true'
+      - 'false'
 
   EnableSecretsManagerEndpoint:
     Type: String
@@ -26,31 +59,27 @@ Parameters:
     AllowedValues:
       - 'true'
       - 'false'
-    Default: 'false'
 
   EnableSNSEndpoint:
     Type: String
-    Description: Create the SNS interface endpoint when private Lambdas publish directly to SNS.
+    Description: Create the SNS interface endpoint for private Lambda notification publishing.
     AllowedValues:
       - 'true'
       - 'false'
-    Default: 'false'
 
   EnableEventBridgeEndpoint:
     Type: String
-    Description: Create the EventBridge interface endpoint when private Lambdas call its API.
+    Description: Create the EventBridge interface endpoint for private Lambda event publishing.
     AllowedValues:
       - 'true'
       - 'false'
-    Default: 'false'
 
   EnableStepFunctionsEndpoint:
     Type: String
-    Description: Create the Step Functions interface endpoint when private Lambdas call its API.
+    Description: Create the Step Functions interface endpoint for private Lambda workflow calls.
     AllowedValues:
       - 'true'
       - 'false'
-    Default: 'false'
 
 Resources:
 
@@ -61,7 +90,7 @@ Resources:
   MediSlotVPC:
     Type: AWS::EC2::VPC
     Properties:
-      CidrBlock: 10.0.0.0/16
+      CidrBlock: !Ref VPCCidr
       EnableDnsSupport: true
       EnableDnsHostnames: true
       Tags:
@@ -91,7 +120,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref MediSlotVPC
-      CidrBlock: 10.0.1.0/24
+      CidrBlock: !Ref PublicSubnetCidr
       AvailabilityZone: !Select
         - 0
         - !GetAZs ''
@@ -132,7 +161,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref MediSlotVPC
-      CidrBlock: 10.0.2.0/24
+      CidrBlock: !Ref PrivateLambdaSubnetAZ1Cidr
       AvailabilityZone: !Select
         - 0
         - !GetAZs ''
@@ -145,7 +174,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref MediSlotVPC
-      CidrBlock: 10.0.3.0/24
+      CidrBlock: !Ref PrivateLambdaSubnetAZ2Cidr
       AvailabilityZone: !Select
         - 1
         - !GetAZs ''
@@ -190,7 +219,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref MediSlotVPC
-      CidrBlock: 10.0.4.0/24
+      CidrBlock: !Ref PrivateRDSSubnetAZ1Cidr
       AvailabilityZone: !Select
         - 0
         - !GetAZs ''
@@ -203,7 +232,7 @@ Resources:
     Type: AWS::EC2::Subnet
     Properties:
       VpcId: !Ref MediSlotVPC
-      CidrBlock: 10.0.5.0/24
+      CidrBlock: !Ref PrivateRDSSubnetAZ2Cidr
       AvailabilityZone: !Select
         - 1
         - !GetAZs ''
@@ -364,7 +393,7 @@ Resources:
       IpProtocol: tcp
       FromPort: 443
       ToPort: 443
-      DestinationPrefixListId: pl-02cd2c6b
+      DestinationPrefixListId: !Ref DynamoDBPrefixListId
 
   # --------------------------------------------------
   # 8. Optional paid interface endpoints
@@ -377,6 +406,20 @@ Resources:
       VpcId: !Ref MediSlotVPC
       VpcEndpointType: Interface
       ServiceName: !Sub com.amazonaws.${AWS::Region}.ssm
+      PrivateDnsEnabled: true
+      SubnetIds:
+        - !Ref PrivateLambdaSubnetAZ1
+        - !Ref PrivateLambdaSubnetAZ2
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+
+  CloudWatchLogsInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: CreateCloudWatchLogsEndpoint
+    Properties:
+      VpcId: !Ref MediSlotVPC
+      VpcEndpointType: Interface
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.logs
       PrivateDnsEnabled: true
       SubnetIds:
         - !Ref PrivateLambdaSubnetAZ1
@@ -445,6 +488,10 @@ Conditions:
     - !Ref EnableSSMEndpoint
     - 'true'
 
+  CreateCloudWatchLogsEndpoint: !Equals
+    - !Ref EnableCloudWatchLogsEndpoint
+    - 'true'
+
   CreateSecretsManagerEndpoint: !Equals
     - !Ref EnableSecretsManagerEndpoint
     - 'true'
@@ -463,6 +510,7 @@ Conditions:
 
   CreateAnyInterfaceEndpoint: !Or
     - !Condition CreateSSMEndpoint
+    - !Condition CreateCloudWatchLogsEndpoint
     - !Condition CreateSecretsManagerEndpoint
     - !Condition CreateSNSEndpoint
     - !Condition CreateEventBridgeEndpoint

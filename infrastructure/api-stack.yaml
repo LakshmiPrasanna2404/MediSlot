@@ -1,14 +1,13 @@
-
 AWSTemplateFormatVersion: '2010-09-09'
-Description: MediSlot HTTP API Gateway for authentication endpoints.
+Description: MediSlot HTTP API Gateway for doctor and patient authentication endpoints.
 
 Parameters:
   Environment:
     Type: String
+    Description: Deployment environment
     AllowedValues:
       - dev
       - prod
-    Default: dev
 
 Resources:
   AuthHttpApi:
@@ -33,34 +32,76 @@ Resources:
       PayloadFormatVersion: '2.0'
       TimeoutInMillis: 15000
 
-  RegisterRoute:
-    Type: AWS::ApiGatewayV2::Route
+  # Existing JWT authorizer Lambda. Public registration, login, and refresh
+  # routes do not use this authorizer; logout does.
+  AuthJwtAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
     Properties:
       ApiId: !Ref AuthHttpApi
-      RouteKey: 'POST /register'
-      Target: !Sub integrations/${AuthApiIntegration}
+      Name: !Sub medislot-${Environment}-jwt-authorizer
+      AuthorizerType: REQUEST
+      AuthorizerUri:
+        Fn::Sub:
+          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuthorizerArn}/invocations
+          - AuthorizerArn:
+              Fn::ImportValue:
+                Fn::Sub: medislot-${Environment}-authorizer-function-arn
+      IdentitySource:
+        - $request.header.Authorization
+      AuthorizerPayloadFormatVersion: '1.0'
+      EnableSimpleResponses: false
+      AuthorizerResultTtlInSeconds: 0
 
-  LoginRoute:
+  DoctorRegisterRoute:
     Type: AWS::ApiGatewayV2::Route
     Properties:
       ApiId: !Ref AuthHttpApi
-      RouteKey: 'POST /login'
+      RouteKey: 'POST /auth/doctors/register'
       Target: !Sub integrations/${AuthApiIntegration}
+      AuthorizationType: NONE
+
+  DoctorLoginRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref AuthHttpApi
+      RouteKey: 'POST /auth/doctors/login'
+      Target: !Sub integrations/${AuthApiIntegration}
+      AuthorizationType: NONE
+
+  PatientRegisterRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref AuthHttpApi
+      RouteKey: 'POST /auth/patients/register'
+      Target: !Sub integrations/${AuthApiIntegration}
+      AuthorizationType: NONE
+
+  PatientLoginRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref AuthHttpApi
+      RouteKey: 'POST /auth/patients/login'
+      Target: !Sub integrations/${AuthApiIntegration}
+      AuthorizationType: NONE
 
   RefreshRoute:
     Type: AWS::ApiGatewayV2::Route
     Properties:
       ApiId: !Ref AuthHttpApi
-      RouteKey: 'POST /refresh'
+      RouteKey: 'POST /auth/refresh'
       Target: !Sub integrations/${AuthApiIntegration}
+      AuthorizationType: NONE
 
   LogoutRoute:
     Type: AWS::ApiGatewayV2::Route
     Properties:
       ApiId: !Ref AuthHttpApi
-      RouteKey: 'POST /logout'
+      RouteKey: 'POST /auth/logout'
       Target: !Sub integrations/${AuthApiIntegration}
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref AuthJwtAuthorizer
 
+  # Allow API Gateway to invoke the authentication Lambda integration.
   AuthApiInvokePermission:
     Type: AWS::Lambda::Permission
     Properties:
@@ -72,6 +113,20 @@ Resources:
       SourceArn: !Sub
         - arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/*/*
         - ApiId: !Ref AuthHttpApi
+
+  # Allow API Gateway to invoke the existing JWT authorizer Lambda.
+  AuthAuthorizerInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Fn::ImportValue:
+          Fn::Sub: medislot-${Environment}-authorizer-function-arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub
+        - arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/authorizers/${AuthorizerId}
+        - ApiId: !Ref AuthHttpApi
+          AuthorizerId: !Ref AuthJwtAuthorizer
 
   AuthApiStage:
     Type: AWS::ApiGatewayV2::Stage

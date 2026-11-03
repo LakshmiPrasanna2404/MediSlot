@@ -1,4 +1,3 @@
-
 AWSTemplateFormatVersion: '2010-09-09'
 Description: MediSlot environment-specific IAM roles and least-privilege execution policies
 
@@ -22,10 +21,8 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Service:
-                - lambda.amazonaws.com
-            Action:
-              - sts:AssumeRole
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
       Policies:
         - PolicyName: AuthorizerExecutionPermissions
           PolicyDocument:
@@ -49,6 +46,15 @@ Resources:
                   - dynamodb:GetItem
                   - dynamodb:BatchGetItem
                 Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-token-revocations
+              - Sid: ManageAuthorizerLambdaNetworkInterfaces
+                Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                  - ec2:AssignPrivateIpAddresses
+                  - ec2:UnassignPrivateIpAddresses
+                Resource: '*'
 
   # Lambda execution role for authentication functions
   AuthLambdaRole:
@@ -61,10 +67,8 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Service:
-                - lambda.amazonaws.com
-            Action:
-              - sts:AssumeRole
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
       Policies:
         - PolicyName: AuthExecutionPermissions
           PolicyDocument:
@@ -77,9 +81,7 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/medislot-${Environment}-*:*
-
-              # Read only authentication and dedicated database parameters
-              - Sid: ReadAuthParameters
+              - Sid: ReadAuthAndDatabaseParameters
                 Effect: Allow
                 Action:
                   - ssm:GetParameter
@@ -87,7 +89,6 @@ Resources:
                 Resource:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/*
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/database/*
-
               - Sid: ManageTokenRevocations
                 Effect: Allow
                 Action:
@@ -95,19 +96,17 @@ Resources:
                   - dynamodb:PutItem
                   - dynamodb:DeleteItem
                   - dynamodb:UpdateItem
+                  - dynamodb:TransactWriteItems
                 Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-token-revocations
-
               - Sid: ManageRefreshTokenSessions
                 Effect: Allow
                 Action:
                   - dynamodb:GetItem
                   - dynamodb:PutItem
                   - dynamodb:DeleteItem
+                  - dynamodb:TransactWriteItems
                 Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-refresh-tokens
-
-              # Lambda VPC network-interface permissions
-              # These EC2 actions require Resource: '*'.
-              - Sid: ManageLambdaNetworkInterfaces
+              - Sid: ManageAuthLambdaNetworkInterfaces
                 Effect: Allow
                 Action:
                   - ec2:CreateNetworkInterface
@@ -116,7 +115,6 @@ Resources:
                   - ec2:AssignPrivateIpAddresses
                   - ec2:UnassignPrivateIpAddresses
                 Resource: '*'
-
 
   # Main application Lambda execution role
   AppLambdaRole:
@@ -129,10 +127,8 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Service:
-                - lambda.amazonaws.com
-            Action:
-              - sts:AssumeRole
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
       Policies:
         - PolicyName: AppExecutionPermissions
           PolicyDocument:
@@ -145,15 +141,16 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/medislot-${Environment}-*:*
-
-              - Sid: ReadApplicationParameters
+              - Sid: ReadApplicationAndDatabaseParameters
                 Effect: Allow
                 Action:
                   - ssm:GetParameter
                   - ssm:GetParameters
-                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/*
-
-              - Sid: AccessApplicationTables
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/database/*
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/*
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/config/*
+              - Sid: AccessSlotTable
                 Effect: Allow
                 Action:
                   - dynamodb:GetItem
@@ -164,42 +161,127 @@ Resources:
                   - dynamodb:Query
                   - dynamodb:Scan
                   - dynamodb:ConditionCheckItem
+                  - dynamodb:TransactGetItems
+                  - dynamodb:TransactWriteItems
                 Resource:
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slot-reservations
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slot-reservations/index/*
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist-offers
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist-offers/index/*
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-idempotency
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-idempotency/index/*
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-notification-dispatch
-
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots/index/GSI_Doctor_Slots
+              - Sid: AccessSeatTable
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:BatchGetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:ConditionCheckItem
+                  - dynamodb:TransactGetItems
+                  - dynamodb:TransactWriteItems
+                Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-seats
+              - Sid: AccessWaitlistTable
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:BatchGetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:ConditionCheckItem
+                  - dynamodb:TransactGetItems
+                  - dynamodb:TransactWriteItems
+                Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist
+              - Sid: AccessHoldOffersTableAndIndexes
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:BatchGetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:ConditionCheckItem
+                  - dynamodb:TransactGetItems
+                  - dynamodb:TransactWriteItems
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers/index/GSI_Patient_Offers
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers/index/GSI_Slot_Offers
+              - Sid: AccessIdempotencyTable
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:ConditionCheckItem
+                  - dynamodb:TransactGetItems
+                  - dynamodb:TransactWriteItems
+                Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-idempotency
+              - Sid: AccessDispatchLogTable
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:BatchGetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-dispatch-log
+              - Sid: ManageDoctorProfilePhotos
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                Resource: !Sub arn:${AWS::Partition}:s3:::medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-doctor-files/*
               - Sid: PublishApplicationEvents
                 Effect: Allow
                 Action:
                   - events:PutEvents
                 Resource: !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/medislot-${Environment}-*
-
               - Sid: PublishApplicationNotifications
                 Effect: Allow
                 Action:
                   - sns:Publish
                 Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-*
+              - Sid: StartSlotWorkflow
+                Effect: Allow
+                Action:
+                  - states:StartExecution
+                  - states:DescribeExecution
+                  - states:StopExecution
+                Resource:
+                  - !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:medislot-${Environment}-*
+                  - !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:medislot-${Environment}-*:*
+              - Sid: ManageAppLambdaNetworkInterfaces
+                Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                  - ec2:AssignPrivateIpAddresses
+                  - ec2:UnassignPrivateIpAddresses
+                Resource: '*'
 
-  # Lambda execution role for reporting jobs
+  # Scheduled maintenance and reporting Lambda execution role
   ReportLambdaRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub medislot-${Environment}-report-role
-      Description: Execution role for MediSlot scheduled reports and maintenance jobs
+      Description: Execution role for MediSlot scheduled jobs and maintenance Lambdas
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
             Principal:
-              Service:
-                - lambda.amazonaws.com
-            Action:
-              - sts:AssumeRole
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
       Policies:
         - PolicyName: ReportExecutionPermissions
           PolicyDocument:
@@ -212,15 +294,15 @@ Resources:
                   - logs:CreateLogStream
                   - logs:PutLogEvents
                 Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/medislot-${Environment}-*:*
-
-              - Sid: ReadReportParameters
+              - Sid: ReadReportAndDatabaseParameters
                 Effect: Allow
                 Action:
                   - ssm:GetParameter
                   - ssm:GetParameters
-                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/*
-
-              - Sid: AccessReportTables
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/database/*
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/config/*
+              - Sid: ReadSlotTableAndDoctorSlotsIndex
                 Effect: Allow
                 Action:
                   - dynamodb:GetItem
@@ -228,16 +310,59 @@ Resources:
                   - dynamodb:Query
                   - dynamodb:Scan
                 Resource:
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slot-reservations
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist-offers
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-notification-dispatch
-
-              - Sid: WriteReportFiles
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots/index/GSI_Doctor_Slots
+              - Sid: MaintainWaitlistTable
                 Effect: Allow
                 Action:
-                  - s3:PutObject
-                  - s3:GetObject
-                Resource: !Sub arn:${AWS::Partition}:s3:::medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-doctor-files/*
+                  - dynamodb:GetItem
+                  - dynamodb:BatchGetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:ConditionCheckItem
+                  - dynamodb:TransactWriteItems
+                Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist
+              - Sid: MaintainHoldOffersTableAndIndexes
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:BatchGetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                  - dynamodb:ConditionCheckItem
+                  - dynamodb:TransactWriteItems
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers/index/GSI_Patient_Offers
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers/index/GSI_Slot_Offers
+              - Sid: ReadDispatchLogTable
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:BatchGetItem
+                  - dynamodb:Query
+                  - dynamodb:Scan
+                Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-dispatch-log
+              - Sid: PublishScheduledEvents
+                Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource: !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/medislot-${Environment}-*
+              - Sid: ManageReportLambdaNetworkInterfaces
+                Effect: Allow
+                Action:
+                  - ec2:CreateNetworkInterface
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:DeleteNetworkInterface
+                  - ec2:AssignPrivateIpAddresses
+                  - ec2:UnassignPrivateIpAddresses
+                Resource: '*'
 
   # EC2 role for dashboard
   DashboardEC2Role:
@@ -250,10 +375,8 @@ Resources:
         Statement:
           - Effect: Allow
             Principal:
-              Service:
-                - ec2.amazonaws.com
-            Action:
-              - sts:AssumeRole
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
       Policies:
         - PolicyName: DashboardReadPermissions
           PolicyDocument:
@@ -265,7 +388,6 @@ Resources:
                   - ssm:GetParameter
                   - ssm:GetParameters
                 Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/dashboard/*
-
               - Sid: ReadDashboardMetrics
                 Effect: Allow
                 Action:
@@ -273,7 +395,6 @@ Resources:
                   - cloudwatch:GetMetricStatistics
                   - cloudwatch:ListMetrics
                 Resource: '*'
-
               - Sid: ReadDashboardLogs
                 Effect: Allow
                 Action:
@@ -310,7 +431,7 @@ Outputs:
       Name: !Sub medislot-${Environment}-app-role-arn
 
   ReportLambdaRoleArn:
-    Description: IAM role ARN for report Lambdas
+    Description: IAM role ARN for report and scheduled-job Lambdas
     Value: !GetAtt ReportLambdaRole.Arn
     Export:
       Name: !Sub medislot-${Environment}-report-role-arn

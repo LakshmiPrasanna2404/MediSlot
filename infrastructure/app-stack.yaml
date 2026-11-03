@@ -1,0 +1,311 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  MediSlot application stack. Hosts the doctor and patient application API,
+  public authentication entry points, and protected routes using the existing JWT Lambda authorizer.
+
+Parameters:
+  Environment:
+    Type: String
+    Description: Deployment environment
+    AllowedValues:
+      - dev
+      - prod
+
+  AppCodeS3Bucket:
+    Type: String
+    Description: S3 bucket containing the application Lambda deployment package
+
+  AppCodeS3Key:
+    Type: String
+    Description: S3 object key for the application Lambda deployment package
+
+  AppHandler:
+    Type: String
+    Default: app_handler.lambda_handler
+    Description: Python module and handler for the application Lambda
+
+  PythonRuntime:
+    Type: String
+    Default: python3.12
+    AllowedValues:
+      - python3.12
+
+  AppTimeout:
+    Type: Number
+    Default: 30
+    MinValue: 3
+    MaxValue: 30
+    Description: Application Lambda timeout in seconds; must not exceed the HTTP API integration timeout
+
+  AppMemorySize:
+    Type: Number
+    Default: 512
+    AllowedValues:
+      - 256
+      - 512
+      - 1024
+      - 1536
+      - 2048
+
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    AllowedValues:
+      - 7
+      - 14
+      - 30
+      - 60
+      - 90
+
+Resources:
+  # ---------------------------------------------------------
+  # Application Lambda logs
+  # ---------------------------------------------------------
+  AppFunctionLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-app
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ---------------------------------------------------------
+  # Main application Lambda
+  # Handles protected doctor and patient application operations.
+  # ---------------------------------------------------------
+  AppFunction:
+    Type: AWS::Lambda::Function
+    DependsOn:
+      - AppFunctionLogGroup
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-app
+      Description: MediSlot doctor and patient application operations
+      Runtime: !Ref PythonRuntime
+      Handler: !Ref AppHandler
+      Role:
+        Fn::ImportValue:
+          Fn::Sub: medislot-${Environment}-app-role-arn
+      Timeout: !Ref AppTimeout
+      MemorySize: !Ref AppMemorySize
+      Architectures:
+        - x86_64
+      Code:
+        S3Bucket: !Ref AppCodeS3Bucket
+        S3Key: !Ref AppCodeS3Key
+      VpcConfig:
+        SubnetIds:
+          - Fn::ImportValue:
+              Fn::Sub: medislot-${Environment}-lambda-subnet-az1-id
+          - Fn::ImportValue:
+              Fn::Sub: medislot-${Environment}-lambda-subnet-az2-id
+        SecurityGroupIds:
+          - Fn::ImportValue:
+              Fn::Sub: medislot-${Environment}-lambda-sg-id
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          DB_HOST:
+            Fn::ImportValue:
+              Fn::Sub: medislot-${Environment}-db-endpoint
+          DB_PORT:
+            Fn::ImportValue:
+              Fn::Sub: medislot-${Environment}-db-port
+          DB_NAME:
+            Fn::ImportValue:
+              Fn::Sub: medislot-${Environment}-db-name
+          DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/database/username
+          DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/database/password
+          SLOTS_TABLE: !Sub medislot-${Environment}-slots
+          SEATS_TABLE: !Sub medislot-${Environment}-seats
+          WAITLIST_TABLE: !Sub medislot-${Environment}-waitlist
+          HOLD_OFFERS_TABLE: !Sub medislot-${Environment}-hold-offers
+          IDEMPOTENCY_TABLE: !Sub medislot-${Environment}-idempotency
+          DISPATCH_LOG_TABLE: !Sub medislot-${Environment}-dispatch-log
+          JWT_SECRET_PARAMETER: !Sub /medislot/${Environment}/auth/jwt-secret
+          TOKEN_REVOCATIONS_TABLE: !Sub medislot-${Environment}-token-revocations
+          DOCTOR_FILES_BUCKET:
+            Fn::ImportValue:
+              Fn::Sub: medislot-${Environment}-doctor-files-bucket-name
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  # ---------------------------------------------------------
+  # HTTP API
+  # ---------------------------------------------------------
+  AppHttpApi:
+    Type: AWS::ApiGatewayV2::Api
+    Properties:
+      Name: !Sub medislot-${Environment}-app-api
+      Description: MediSlot doctor and patient application API
+      ProtocolType: HTTP
+      Tags:
+        Project: MediSlot
+        Environment: !Ref Environment
+
+  # Protected application Lambda integration
+  AppApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref AppHttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri: !GetAtt AppFunction.Arn
+      PayloadFormatVersion: '2.0'
+      TimeoutInMillis: 30000
+
+  # Existing authentication Lambda integration
+  AuthApiIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref AppHttpApi
+      IntegrationType: AWS_PROXY
+      IntegrationMethod: POST
+      IntegrationUri:
+        Fn::ImportValue:
+          Fn::Sub: medislot-${Environment}-auth-function-arn
+      PayloadFormatVersion: '2.0'
+      TimeoutInMillis: 30000
+
+  # Existing authorizer Lambda validates JWT signature, expiry,
+  # and token revocation status in DynamoDB.
+  AppJwtAuthorizer:
+    Type: AWS::ApiGatewayV2::Authorizer
+    Properties:
+      ApiId: !Ref AppHttpApi
+      Name: !Sub medislot-${Environment}-jwt-authorizer
+      AuthorizerType: REQUEST
+      AuthorizerUri:
+        Fn::Sub:
+          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuthorizerArn}/invocations
+          - AuthorizerArn:
+              Fn::ImportValue:
+                Fn::Sub: medislot-${Environment}-authorizer-function-arn
+      IdentitySource:
+        - $request.header.Authorization
+      AuthorizerPayloadFormatVersion: '1.0'
+      EnableSimpleResponses: false
+      AuthorizerResultTtlInSeconds: 0
+
+  # Public authentication routes: no existing access token required.
+  AuthRegisterRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref AppHttpApi
+      RouteKey: 'POST /auth/register'
+      Target: !Sub integrations/${AuthApiIntegration}
+      AuthorizationType: NONE
+
+  AuthLoginRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref AppHttpApi
+      RouteKey: 'POST /auth/login'
+      Target: !Sub integrations/${AuthApiIntegration}
+      AuthorizationType: NONE
+
+  AuthRefreshRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref AppHttpApi
+      RouteKey: 'POST /auth/refresh'
+      Target: !Sub integrations/${AuthApiIntegration}
+      AuthorizationType: NONE
+
+  # Logout remains protected by the access-token authorizer.
+  AuthLogoutRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref AppHttpApi
+      RouteKey: 'POST /auth/logout'
+      Target: !Sub integrations/${AuthApiIntegration}
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref AppJwtAuthorizer
+
+  # All other routes are protected and dispatched by the application Lambda.
+  AppDefaultRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref AppHttpApi
+      RouteKey: '$default'
+      Target: !Sub integrations/${AppApiIntegration}
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref AppJwtAuthorizer
+
+  # API Gateway may invoke the application Lambda.
+  AppApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt AppFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub
+        - arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/*
+        - ApiId: !Ref AppHttpApi
+
+  # API Gateway may invoke the existing authentication Lambda.
+  AuthApiInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Fn::ImportValue:
+          Fn::Sub: medislot-${Environment}-auth-function-arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub
+        - arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/*
+        - ApiId: !Ref AppHttpApi
+
+  # API Gateway may invoke the existing JWT authorizer Lambda.
+  AppAuthorizerInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName:
+        Fn::ImportValue:
+          Fn::Sub: medislot-${Environment}-authorizer-function-arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub
+        - arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/authorizers/${AuthorizerId}
+        - ApiId: !Ref AppHttpApi
+          AuthorizerId: !Ref AppJwtAuthorizer
+
+  AppApiStage:
+    Type: AWS::ApiGatewayV2::Stage
+    Properties:
+      ApiId: !Ref AppHttpApi
+      StageName: '$default'
+      AutoDeploy: true
+      Tags:
+        Project: MediSlot
+        Environment: !Ref Environment
+
+Outputs:
+  AppFunctionName:
+    Description: MediSlot application Lambda function name
+    Value: !Ref AppFunction
+    Export:
+      Name: !Sub medislot-${Environment}-app-function-name
+
+  AppFunctionArn:
+    Description: MediSlot application Lambda function ARN
+    Value: !GetAtt AppFunction.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-app-function-arn
+
+  AppApiUrl:
+    Description: Base URL for the doctor and patient application API
+    Value: !GetAtt AppHttpApi.ApiEndpoint
+    Export:
+      Name: !Sub medislot-${Environment}-app-api-url
+
+  AppApiId:
+    Description: Application API Gateway ID
+    Value: !Ref AppHttpApi
+    Export:
+      Name: !Sub medislot-${Environment}-app-api-id

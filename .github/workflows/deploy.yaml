@@ -5,15 +5,24 @@ on:
     branches:
       - main
   workflow_dispatch:
+    inputs:
+      environment:
+        description: CloudFormation deployment environment
+        required: true
+        type: choice
+        options:
+          - dev
+          - prod
+        default: dev
 
 permissions:
   contents: read
   id-token: write
 
 env:
-  AWS_REGION: us-east-1
-  ENVIRONMENT: dev
-  ARTIFACT_BUCKET: cloudmart-artifacts-393476285814
+  AWS_REGION: ${{ vars.AWS_REGION }}
+  AWS_ROLE_ARN: ${{ secrets.AWS_ROLE_ARN }}
+  ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
 
 jobs:
   lint-and-validate:
@@ -23,6 +32,13 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+
+      - name: Check deployment configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ -n "$AWS_REGION" ]] || { echo "::error::GitHub variable AWS_REGION is not set"; exit 1; }
+          [[ -n "$AWS_ROLE_ARN" ]] || { echo "::error::GitHub variable AWS_ROLE_ARN is not set"; exit 1; }
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -74,7 +90,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::393476285814:role/medislot-github-actions-role
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Verify AWS identity
@@ -109,7 +125,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::393476285814:role/medislot-github-actions-role
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy Network
@@ -153,7 +169,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::393476285814:role/medislot-github-actions-role
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy Data
@@ -193,7 +209,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::393476285814:role/medislot-github-actions-role
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy IAM
@@ -237,13 +253,32 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::393476285814:role/medislot-github-actions-role
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Install packaging and validation tools
         run: |
           python -m pip install --upgrade pip
           python -m pip install cfn-lint yamllint
+
+      - name: Read deployment artifact bucket from CloudFormation
+        id: artifact-bucket
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUCKET=$(aws cloudformation describe-stacks \
+            --stack-name "medislot-${ENVIRONMENT}-data" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='ArtifactBucketName'].OutputValue | [0]" \
+            --output text)
+
+          if [[ -z "$BUCKET" || "$BUCKET" == "None" ]]; then
+            echo "::error::CloudFormation stack medislot-${ENVIRONMENT}-data does not expose ArtifactBucketName. Add a dedicated deployment-artifacts S3 bucket and ArtifactBucketName output to the data stack before running this workflow."
+            exit 1
+          fi
+
+          echo "bucket=$BUCKET" >> "$GITHUB_OUTPUT"
 
       - name: Package Auth Lambda
         shell: bash
@@ -295,11 +330,11 @@ jobs:
           set -euo pipefail
 
           aws s3 cp auth.zip \
-            "s3://${ARTIFACT_BUCKET}/medislot/${ENVIRONMENT}/auth/auth-${GITHUB_SHA}.zip" \
+            "s3://${{ steps.artifact-bucket.outputs.bucket }}/medislot/${ENVIRONMENT}/auth/auth-${GITHUB_SHA}.zip" \
             --region "$AWS_REGION"
 
           aws s3 cp authorizer.zip \
-            "s3://${ARTIFACT_BUCKET}/medislot/${ENVIRONMENT}/auth/authorizer-${GITHUB_SHA}.zip" \
+            "s3://${{ steps.artifact-bucket.outputs.bucket }}/medislot/${ENVIRONMENT}/auth/authorizer-${GITHUB_SHA}.zip" \
             --region "$AWS_REGION"
 
       - name: Validate Auth template
@@ -326,9 +361,9 @@ jobs:
             --template-file infrastructure/auth-stack.yaml \
             --parameter-overrides \
               Environment="${ENVIRONMENT}" \
-              AuthCodeS3Bucket="${ARTIFACT_BUCKET}" \
+              AuthCodeS3Bucket="${{ steps.artifact-bucket.outputs.bucket }}" \
               AuthCodeS3Key="medislot/${ENVIRONMENT}/auth/auth-${GITHUB_SHA}.zip" \
-              AuthorizerCodeS3Bucket="${ARTIFACT_BUCKET}" \
+              AuthorizerCodeS3Bucket="${{ steps.artifact-bucket.outputs.bucket }}" \
               AuthorizerCodeS3Key="medislot/${ENVIRONMENT}/auth/authorizer-${GITHUB_SHA}.zip" \
             --no-fail-on-empty-changeset \
             --region "$AWS_REGION"
@@ -357,7 +392,7 @@ jobs:
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::393476285814:role/medislot-github-actions-role
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Validate API template

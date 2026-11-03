@@ -1,4 +1,3 @@
-
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   MediSlot authentication stack with patient registration,
@@ -11,7 +10,6 @@ Parameters:
     AllowedValues:
       - dev
       - prod
-    Default: dev
 
   AuthCodeS3Bucket:
     Type: String
@@ -44,6 +42,7 @@ Parameters:
     Default: python3.12
     AllowedValues:
       - python3.12
+    Description: Python runtime for authentication Lambdas
 
   LogRetentionDays:
     Type: Number
@@ -54,6 +53,35 @@ Parameters:
       - 30
       - 60
       - 90
+    Description: CloudWatch log retention period
+
+  AuthTimeout:
+    Type: Number
+    Default: 15
+    MinValue: 1
+    MaxValue: 900
+    Description: Authentication Lambda timeout in seconds
+
+  AuthMemorySize:
+    Type: Number
+    Default: 256
+    MinValue: 128
+    MaxValue: 10240
+    Description: Authentication Lambda memory in MB
+
+  AuthorizerTimeout:
+    Type: Number
+    Default: 10
+    MinValue: 1
+    MaxValue: 900
+    Description: JWT authorizer Lambda timeout in seconds
+
+  AuthorizerMemorySize:
+    Type: Number
+    Default: 128
+    MinValue: 128
+    MaxValue: 10240
+    Description: JWT authorizer Lambda memory in MB
 
 Resources:
   # Authentication Lambda logs
@@ -95,8 +123,8 @@ Resources:
       Role:
         Fn::ImportValue:
           Fn::Sub: medislot-${Environment}-auth-role-arn
-      Timeout: 15
-      MemorySize: 256
+      Timeout: !Ref AuthTimeout
+      MemorySize: !Ref AuthMemorySize
       Architectures:
         - x86_64
       Code:
@@ -153,13 +181,22 @@ Resources:
       Role:
         Fn::ImportValue:
           Fn::Sub: medislot-${Environment}-authorizer-role-arn
-      Timeout: 10
-      MemorySize: 128
+      Timeout: !Ref AuthorizerTimeout
+      MemorySize: !Ref AuthorizerMemorySize
       Architectures:
         - x86_64
       Code:
         S3Bucket: !Ref AuthorizerCodeS3Bucket
         S3Key: !Ref AuthorizerCodeS3Key
+      VpcConfig:
+        SubnetIds:
+          - Fn::ImportValue:
+              Fn::Sub: medislot-${Environment}-lambda-subnet-az1-id
+          - Fn::ImportValue:
+              Fn::Sub: medislot-${Environment}-lambda-subnet-az2-id
+        SecurityGroupIds:
+          - Fn::ImportValue:
+              Fn::Sub: medislot-${Environment}-lambda-sg-id
       Environment:
         Variables:
           ENVIRONMENT: !Ref Environment
