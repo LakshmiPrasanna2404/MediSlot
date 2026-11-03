@@ -418,7 +418,7 @@ Resources:
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      BucketName: !Sub 'medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-doctor-files'
+      BucketName: !Sub 'medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-doctor-profile-files'
       PublicAccessBlockConfiguration:
         BlockPublicAcls: true
         BlockPublicPolicy: true
