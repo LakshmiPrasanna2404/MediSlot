@@ -13,7 +13,8 @@ Parameters:
 
   DBInstanceClass:
     Type: String
-    Description: RDS instance class; confirm regional availability before deployment.
+    Default: db.t3.micro
+    Description: RDS instance class; default is suitable for the dev environment.
     AllowedValues:
       - db.t3.micro
       - db.t3.small
@@ -21,18 +22,21 @@ Parameters:
 
   DBAllocatedStorage:
     Type: Number
+    Default: 20
     Description: Initial RDS storage in GiB.
     MinValue: 20
     MaxValue: 1000
 
   DBMaxAllocatedStorage:
     Type: Number
+    Default: 100
     Description: Maximum RDS autoscaling storage in GiB; must be at least DBAllocatedStorage.
     MinValue: 20
     MaxValue: 1000
 
   DBName:
     Type: String
+    Default: medislot
     Description: MySQL application database name.
     MinLength: 1
     MaxLength: 64
@@ -41,6 +45,7 @@ Parameters:
 
   DBMasterUsername:
     Type: String
+    Default: medislotadmin
     Description: RDS master username; the password is generated and managed by RDS.
     MinLength: 1
     MaxLength: 16
@@ -49,12 +54,14 @@ Parameters:
 
   BootstrapLambdaRuntime:
     Type: String
+    Default: python3.12
     Description: Python runtime for the database-parameter bootstrap Lambda.
     AllowedValues:
       - python3.12
 
   BootstrapLambdaTimeout:
     Type: Number
+    Default: 60
     Description: Timeout in seconds for the database-parameter bootstrap Lambda.
     MinValue: 1
     MaxValue: 900
