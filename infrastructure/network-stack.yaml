@@ -59,8 +59,8 @@ Parameters:
 
   EnableSecretsManagerEndpoint:
     Type: String
-    Description: Create the Secrets Manager interface endpoint for private Lambda access to database credentials.
-    Default: 'true'
+    Description: Create the Secrets Manager interface endpoint. Not required when database credentials are read from SSM Parameter Store.
+    Default: 'false'
     AllowedValues:
       - 'true'
       - 'false'
@@ -68,7 +68,7 @@ Parameters:
   EnableSNSEndpoint:
     Type: String
     Description: Create the SNS interface endpoint for private Lambda notification publishing.
-    Default: 'false'
+    Default: 'true'
     AllowedValues:
       - 'true'
       - 'false'
@@ -76,7 +76,7 @@ Parameters:
   EnableEventBridgeEndpoint:
     Type: String
     Description: Create the EventBridge interface endpoint for private Lambda event publishing.
-    Default: 'false'
+    Default: 'true'
     AllowedValues:
       - 'true'
       - 'false'
@@ -84,7 +84,7 @@ Parameters:
   EnableStepFunctionsEndpoint:
     Type: String
     Description: Create the Step Functions interface endpoint for private Lambda workflow calls.
-    Default: 'false'
+    Default: 'true'
     AllowedValues:
       - 'true'
       - 'false'

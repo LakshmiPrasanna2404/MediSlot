@@ -1,8 +1,10 @@
+
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  MediSlot data stack. Creates the private MySQL database, applies the
-  transport-security policy to the existing doctor profile files bucket,
-  and exports references to existing DynamoDB tables.
+  MediSlot data stack. Creates the private MySQL database and private Lambda
+  artifacts bucket, applies the HTTPS-only policy to the existing doctor
+  profile files bucket, and exports references to the existing DynamoDB
+  tables and SSM database credentials. DynamoDB tables are not recreated here.
 
 Parameters:
   Environment:
@@ -36,18 +38,9 @@ Parameters:
   DBName:
     Type: String
     Default: medislot
-    Description: MySQL application database name.
+    Description: Application database name.
     MinLength: 1
     MaxLength: 64
-    AllowedPattern: '^[a-zA-Z][a-zA-Z0-9]*$'
-    ConstraintDescription: Must begin with a letter and contain only letters and numbers.
-
-  DBMasterUsername:
-    Type: String
-    Default: medislotadmin
-    Description: RDS master username; RDS manages the password.
-    MinLength: 1
-    MaxLength: 16
     AllowedPattern: '^[a-zA-Z][a-zA-Z0-9]*$'
     ConstraintDescription: Must begin with a letter and contain only letters and numbers.
 
@@ -79,22 +72,30 @@ Resources:
       Engine: mysql
       DBInstanceClass: !Ref DBInstanceClass
       DBName: !Ref DBName
-      MasterUsername: !Ref DBMasterUsername
-      ManageMasterUserPassword: true
+
+      # Credentials are retrieved from SSM Parameter Store.
+      MasterUsername: !Sub '{{resolve:ssm:/medislot/${Environment}/db/username}}'
+      MasterUserPassword: !Sub '{{resolve:ssm-secure:/medislot/${Environment}/db/password}}'
+
       AllocatedStorage: !Ref DBAllocatedStorage
       MaxAllocatedStorage: !Ref DBMaxAllocatedStorage
       StorageType: gp3
-      StorageEncrypted: true
+
+      # RDS storage encryption is disabled.
+      StorageEncrypted: false
+
       PubliclyAccessible: false
       MultiAZ: !If [IsProd, true, false]
       BackupRetentionPeriod: !If [IsProd, 7, 1]
       DeletionProtection: !If [IsProd, true, false]
       AutoMinorVersionUpgrade: true
       CopyTagsToSnapshot: true
+
       DBSubnetGroupName: !Ref MediSlotDBSubnetGroup
       VPCSecurityGroups:
         - Fn::ImportValue:
             Fn::Sub: 'medislot-${Environment}-rds-sg-id'
+
       Tags:
         - Key: Name
           Value: !Sub 'medislot-${Environment}-mysql'
@@ -103,8 +104,49 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # This bucket already exists in the AWS account. Do not try to create it again.
-  # CloudFormation manages only the bucket policy.
+  # Dedicated private bucket for Lambda deployment packages.
+  LambdaArtifactsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub 'medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-artifacts'
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  LambdaArtifactsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref LambdaArtifactsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt LambdaArtifactsBucket.Arn
+              - !Sub '${LambdaArtifactsBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  # Existing bucket: CloudFormation manages only its bucket policy.
   DoctorProfileFilesBucketPolicy:
     Type: AWS::S3::BucketPolicy
     Properties:
@@ -124,6 +166,18 @@ Resources:
                 aws:SecureTransport: 'false'
 
 Outputs:
+  ArtifactBucketName:
+    Description: Private S3 bucket used by GitHub Actions for Lambda deployment packages.
+    Value: !Ref LambdaArtifactsBucket
+    Export:
+      Name: !Sub 'medislot-${Environment}-artifact-bucket-name'
+
+  ArtifactBucketArn:
+    Description: ARN of the private Lambda deployment artifacts bucket.
+    Value: !GetAtt LambdaArtifactsBucket.Arn
+    Export:
+      Name: !Sub 'medislot-${Environment}-artifact-bucket-arn'
+
   DBInstanceIdentifier:
     Description: RDS instance identifier.
     Value: !Ref MediSlotMySQL
@@ -148,11 +202,17 @@ Outputs:
     Export:
       Name: !Sub 'medislot-${Environment}-db-name'
 
-  DBMasterSecretArn:
-    Description: ARN of the RDS-managed master credentials secret.
-    Value: !GetAtt MediSlotMySQL.MasterUserSecret.SecretArn
+  DBUsernameParameterName:
+    Description: SSM parameter containing the database username.
+    Value: !Sub '/medislot/${Environment}/db/username'
     Export:
-      Name: !Sub 'medislot-${Environment}-db-master-secret-arn'
+      Name: !Sub 'medislot-${Environment}-db-username-parameter'
+
+  DBPasswordParameterName:
+    Description: SSM SecureString parameter containing the database password.
+    Value: !Sub '/medislot/${Environment}/db/password'
+    Export:
+      Name: !Sub 'medislot-${Environment}-db-password-parameter'
 
   RefreshTokensTableName:
     Description: Existing refresh tokens table name; not recreated by this stack.

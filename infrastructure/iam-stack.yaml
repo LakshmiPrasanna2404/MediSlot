@@ -88,7 +88,7 @@ Resources:
                   - ssm:GetParameters
                 Resource:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/*
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/database/*
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/*
               - Sid: ManageTokenRevocations
                 Effect: Allow
                 Action:
@@ -116,7 +116,8 @@ Resources:
                   - ec2:UnassignPrivateIpAddresses
                 Resource: '*'
 
-  # Main application Lambda execution role
+  # Main application Lambda execution role. Attach only to application Lambdas
+  # that require the permissions below.
   AppLambdaRole:
     Type: AWS::IAM::Role
     Properties:
@@ -147,7 +148,7 @@ Resources:
                   - ssm:GetParameter
                   - ssm:GetParameters
                 Resource:
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/database/*
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/*
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/*
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/config/*
               - Sid: AccessSlotTable
@@ -239,7 +240,7 @@ Resources:
                   - s3:GetObject
                   - s3:PutObject
                   - s3:DeleteObject
-                Resource: !Sub arn:${AWS::Partition}:s3:::medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-doctor-files/*
+                Resource: !Sub arn:${AWS::Partition}:s3:::medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-doctor-profile-files/*
               - Sid: PublishApplicationEvents
                 Effect: Allow
                 Action:
@@ -300,7 +301,7 @@ Resources:
                   - ssm:GetParameter
                   - ssm:GetParameters
                 Resource:
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/database/*
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/*
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/config/*
               - Sid: ReadSlotTableAndDoctorSlotsIndex
                 Effect: Allow
@@ -410,6 +411,39 @@ Resources:
       InstanceProfileName: !Sub medislot-${Environment}-dashboard-profile
       Roles:
         - !Ref DashboardEC2Role
+
+
+  # Permissions used by GitHub Actions / CloudFormation to resolve DB credentials
+  # from SSM Parameter Store during the data-stack deployment.
+  GitHubActionsSSMParameterAccess:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub medislot-${Environment}-github-actions-ssm-parameter-access
+      Roles:
+        - medislot-github-actions-role
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ReadMediSlotDatabaseParameters
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+              - ssm:GetParameters
+            Resource:
+              - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/username
+              - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/password
+          - Sid: DecryptDatabaseSecureStringThroughSSM
+            Effect: Allow
+            Action:
+              - kms:Decrypt
+            Resource: '*'
+            Condition:
+              StringEquals:
+                kms:ViaService: !Sub ssm.${AWS::Region}.amazonaws.com
+              StringLike:
+                kms:EncryptionContext:PARAMETER_ARN:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/username
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/password
 
 Outputs:
   AuthorizerLambdaRoleArn:
