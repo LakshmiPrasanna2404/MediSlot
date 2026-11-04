@@ -38,7 +38,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ -n "$AWS_REGION" ]] || { echo "::error::GitHub variable AWS_REGION is not set"; exit 1; }
-          [[ -n "$AWS_ROLE_ARN" ]] || { echo "::error::GitHub variable AWS_ROLE_ARN is not set"; exit 1; }
+          [[ -n "$AWS_ROLE_ARN" ]] || { echo "::error::GitHub secret AWS_ROLE_ARN is not set"; exit 1; }
 
       - name: Set up Python
         uses: actions/setup-python@v5
@@ -115,6 +115,7 @@ jobs:
               --region "$AWS_REGION" >/dev/null
           done
 
+  # 1. NETWORK
   deploy-network:
     name: Deploy Network Stack
     runs-on: ubuntu-latest
@@ -155,12 +156,11 @@ jobs:
           echo "Network stack status: $STATUS"
           [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
 
+  # 2. DATA
   deploy-data:
     name: Deploy Data Stack
     runs-on: ubuntu-latest
-    needs:
-      - deploy-network
-      - deploy-iam
+    needs: deploy-network
 
     steps:
       - uses: actions/checkout@v4
@@ -197,10 +197,11 @@ jobs:
           echo "Data stack status: $STATUS"
           [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
 
+  # 3. IAM
   deploy-iam:
     name: Deploy IAM Stack
     runs-on: ubuntu-latest
-    needs: deploy-network
+    needs: deploy-data
 
     steps:
       - uses: actions/checkout@v4
@@ -237,6 +238,7 @@ jobs:
           echo "IAM stack status: $STATUS"
           [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
 
+  # 4. AUTH
   deploy-auth:
     name: Deploy Auth Stack
     runs-on: ubuntu-latest
@@ -272,7 +274,7 @@ jobs:
             --output text)
 
           if [[ -z "$BUCKET" || "$BUCKET" == "None" ]]; then
-            echo "::error::CloudFormation stack medislot-${ENVIRONMENT}-data does not expose ArtifactBucketName. Add a dedicated deployment-artifacts S3 bucket and ArtifactBucketName output to the data stack before running this workflow."
+            echo "::error::CloudFormation stack medislot-${ENVIRONMENT}-data does not expose ArtifactBucketName."
             exit 1
           fi
 
@@ -354,9 +356,21 @@ jobs:
         run: |
           set -euo pipefail
 
+          CFN_EXECUTION_ROLE_ARN=$(aws cloudformation describe-stacks \
+            --stack-name "medislot-${ENVIRONMENT}-iam" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='CloudFormationExecutionRoleArn'].OutputValue | [0]" \
+            --output text)
+
+          if [[ -z "$CFN_EXECUTION_ROLE_ARN" || "$CFN_EXECUTION_ROLE_ARN" == "None" ]]; then
+            echo "::error::CloudFormationExecutionRoleArn output is missing from the IAM stack."
+            exit 1
+          fi
+
           aws cloudformation deploy \
             --stack-name "medislot-${ENVIRONMENT}-auth" \
             --template-file infrastructure/auth-stack.yaml \
+            --role-arn "$CFN_EXECUTION_ROLE_ARN" \
             --parameter-overrides \
               Environment="${ENVIRONMENT}" \
               AuthCodeS3Bucket="${{ steps.artifact-bucket.outputs.bucket }}" \
@@ -380,6 +394,7 @@ jobs:
           echo "Auth stack status: $STATUS"
           [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
 
+  # 5. API
   deploy-api:
     name: Deploy API Stack
     runs-on: ubuntu-latest
@@ -409,10 +424,22 @@ jobs:
         run: |
           set -euo pipefail
 
+          CFN_EXECUTION_ROLE_ARN=$(aws cloudformation describe-stacks \
+            --stack-name "medislot-${ENVIRONMENT}-iam" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='CloudFormationExecutionRoleArn'].OutputValue | [0]" \
+            --output text)
+
+          if [[ -z "$CFN_EXECUTION_ROLE_ARN" || "$CFN_EXECUTION_ROLE_ARN" == "None" ]]; then
+            echo "::error::CloudFormationExecutionRoleArn output is missing from the IAM stack."
+            exit 1
+          fi
+
           aws cloudformation deploy \
             --stack-name "medislot-${ENVIRONMENT}-api" \
             --template-file infrastructure/api-stack.yaml \
             --parameter-overrides Environment="${ENVIRONMENT}" \
+            --role-arn "$CFN_EXECUTION_ROLE_ARN" \
             --no-fail-on-empty-changeset \
             --region "$AWS_REGION"
 
