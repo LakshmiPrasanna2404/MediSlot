@@ -470,6 +470,13 @@ Resources:
                   - logs:DescribeLogGroups
                   - logs:ListTagsForResource
                 Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/medislot-${Environment}-*
+              - Sid: DescribeNetworkConfiguration
+                Effect: Allow
+                Action:
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeSubnets
+                  - ec2:DescribeVpcs
+                Resource: '*'
               - Sid: ReadMediSlotLambdaPackages
                 Effect: Allow
                 Action:
