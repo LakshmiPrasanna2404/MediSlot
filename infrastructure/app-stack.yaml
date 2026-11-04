@@ -203,19 +203,35 @@ Resources:
   # ---------------------------------------------------------
   # Public authentication routes
   # ---------------------------------------------------------
-  AuthRegisterRoute:
+  AuthDoctorRegisterRoute:
     Type: AWS::ApiGatewayV2::Route
     Properties:
       ApiId: !Ref AppHttpApi
-      RouteKey: 'POST /auth/register'
+      RouteKey: 'POST /auth/doctors/register'
       Target: !Sub integrations/${AuthApiIntegration}
       AuthorizationType: NONE
 
-  AuthLoginRoute:
+  AuthDoctorLoginRoute:
     Type: AWS::ApiGatewayV2::Route
     Properties:
       ApiId: !Ref AppHttpApi
-      RouteKey: 'POST /auth/login'
+      RouteKey: 'POST /auth/doctors/login'
+      Target: !Sub integrations/${AuthApiIntegration}
+      AuthorizationType: NONE
+
+  AuthPatientRegisterRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref AppHttpApi
+      RouteKey: 'POST /auth/patients/register'
+      Target: !Sub integrations/${AuthApiIntegration}
+      AuthorizationType: NONE
+
+  AuthPatientLoginRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref AppHttpApi
+      RouteKey: 'POST /auth/patients/login'
       Target: !Sub integrations/${AuthApiIntegration}
       AuthorizationType: NONE
 
