@@ -1,3 +1,4 @@
+
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   MediSlot authentication stack with patient registration,
@@ -151,8 +152,8 @@ Resources:
           DB_NAME:
             Fn::ImportValue:
               Fn::Sub: medislot-${Environment}-db-name
-          DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/database/username
-          DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/database/password
+          DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/db/username
+          DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
           TOKEN_REVOCATIONS_TABLE:
             Fn::ImportValue:
               Fn::Sub: medislot-${Environment}-token-revocations-table-name
