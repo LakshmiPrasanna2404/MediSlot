@@ -413,6 +413,26 @@ Resources:
         - !Ref DashboardEC2Role
 
 
+  # Allow the GitHub Actions deployment role to resolve database parameters
+  # used by the Data stack's CloudFormation dynamic references.
+  GitHubActionsSSMParameterAccess:
+    Type: AWS::IAM::Policy
+    Properties:
+      PolicyName: !Sub medislot-${Environment}-github-actions-ssm-parameter-access
+      Roles:
+        - medislot-github-actions-role
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ReadMediSlotDatabaseParameters
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+              - ssm:GetParameters
+            Resource:
+              - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/username
+              - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/password
+
 Outputs:
   AuthorizerLambdaRoleArn:
     Description: IAM role ARN for the authorizer Lambda
