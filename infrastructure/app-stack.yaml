@@ -1,3 +1,4 @@
+
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   MediSlot application stack. Hosts the doctor and patient application API,
@@ -74,7 +75,6 @@ Resources:
 
   # ---------------------------------------------------------
   # Main application Lambda
-  # Handles protected doctor and patient application operations.
   # ---------------------------------------------------------
   AppFunction:
     Type: AWS::Lambda::Function
@@ -107,28 +107,37 @@ Resources:
       Environment:
         Variables:
           ENVIRONMENT: !Ref Environment
+
           DB_HOST:
             Fn::ImportValue:
               Fn::Sub: medislot-${Environment}-db-endpoint
+
           DB_PORT:
             Fn::ImportValue:
               Fn::Sub: medislot-${Environment}-db-port
+
           DB_NAME:
             Fn::ImportValue:
               Fn::Sub: medislot-${Environment}-db-name
-          DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/database/username
-          DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/database/password
+
+          # Corrected to match DATA stack parameter paths
+          DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/db/username
+          DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
+
           SLOTS_TABLE: !Sub medislot-${Environment}-slots
           SEATS_TABLE: !Sub medislot-${Environment}-seats
           WAITLIST_TABLE: !Sub medislot-${Environment}-waitlist
           HOLD_OFFERS_TABLE: !Sub medislot-${Environment}-hold-offers
           IDEMPOTENCY_TABLE: !Sub medislot-${Environment}-idempotency
           DISPATCH_LOG_TABLE: !Sub medislot-${Environment}-dispatch-log
+
           JWT_SECRET_PARAMETER: !Sub /medislot/${Environment}/auth/jwt-secret
           TOKEN_REVOCATIONS_TABLE: !Sub medislot-${Environment}-token-revocations
+
           DOCTOR_FILES_BUCKET:
             Fn::ImportValue:
               Fn::Sub: medislot-${Environment}-doctor-files-bucket-name
+
       Tags:
         - Key: Project
           Value: MediSlot
@@ -172,8 +181,7 @@ Resources:
       PayloadFormatVersion: '2.0'
       TimeoutInMillis: 30000
 
-  # Existing authorizer Lambda validates JWT signature, expiry,
-  # and token revocation status in DynamoDB.
+  # Existing JWT Lambda authorizer
   AppJwtAuthorizer:
     Type: AWS::ApiGatewayV2::Authorizer
     Properties:
@@ -192,7 +200,9 @@ Resources:
       EnableSimpleResponses: false
       AuthorizerResultTtlInSeconds: 0
 
-  # Public authentication routes: no existing access token required.
+  # ---------------------------------------------------------
+  # Public authentication routes
+  # ---------------------------------------------------------
   AuthRegisterRoute:
     Type: AWS::ApiGatewayV2::Route
     Properties:
@@ -217,7 +227,9 @@ Resources:
       Target: !Sub integrations/${AuthApiIntegration}
       AuthorizationType: NONE
 
-  # Logout remains protected by the access-token authorizer.
+  # ---------------------------------------------------------
+  # Protected authentication route
+  # ---------------------------------------------------------
   AuthLogoutRoute:
     Type: AWS::ApiGatewayV2::Route
     Properties:
@@ -227,7 +239,9 @@ Resources:
       AuthorizationType: CUSTOM
       AuthorizerId: !Ref AppJwtAuthorizer
 
-  # All other routes are protected and dispatched by the application Lambda.
+  # ---------------------------------------------------------
+  # Protected application routes
+  # ---------------------------------------------------------
   AppDefaultRoute:
     Type: AWS::ApiGatewayV2::Route
     Properties:
@@ -237,7 +251,9 @@ Resources:
       AuthorizationType: CUSTOM
       AuthorizerId: !Ref AppJwtAuthorizer
 
-  # API Gateway may invoke the application Lambda.
+  # ---------------------------------------------------------
+  # Lambda invocation permissions
+  # ---------------------------------------------------------
   AppApiInvokePermission:
     Type: AWS::Lambda::Permission
     Properties:
@@ -248,7 +264,6 @@ Resources:
         - arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/*
         - ApiId: !Ref AppHttpApi
 
-  # API Gateway may invoke the existing authentication Lambda.
   AuthApiInvokePermission:
     Type: AWS::Lambda::Permission
     Properties:
@@ -261,7 +276,6 @@ Resources:
         - arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/*
         - ApiId: !Ref AppHttpApi
 
-  # API Gateway may invoke the existing JWT authorizer Lambda.
   AppAuthorizerInvokePermission:
     Type: AWS::Lambda::Permission
     Properties:
@@ -275,6 +289,9 @@ Resources:
         - ApiId: !Ref AppHttpApi
           AuthorizerId: !Ref AppJwtAuthorizer
 
+  # ---------------------------------------------------------
+  # Default API stage
+  # ---------------------------------------------------------
   AppApiStage:
     Type: AWS::ApiGatewayV2::Stage
     Properties:
