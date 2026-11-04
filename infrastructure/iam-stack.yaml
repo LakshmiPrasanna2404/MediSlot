@@ -490,7 +490,9 @@ Resources:
                   - apigateway:PUT
                   - apigateway:PATCH
                   - apigateway:DELETE
-                Resource: !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}::/apis*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}::/apis*
+                  - !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}::/tags/*
 
 Outputs:
   AuthorizerLambdaRoleArn:
