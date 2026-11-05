@@ -330,6 +330,16 @@ Resources:
       ToPort: 3306
       DestinationSecurityGroupId: !Ref RDSSecurityGroup
 
+  LambdaToDynamoDBEgress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref LambdaSecurityGroup
+      Description: HTTPS access to DynamoDB Gateway VPC endpoint
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      DestinationPrefixListId: pl-02cd2c6b
+
   # --------------------------------------------------
   # 6. Gateway VPC endpoints (no hourly endpoint charge)
   # --------------------------------------------------

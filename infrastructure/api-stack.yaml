@@ -98,8 +98,7 @@ Resources:
       ApiId: !Ref AuthHttpApi
       RouteKey: 'POST /auth/logout'
       Target: !Sub integrations/${AuthApiIntegration}
-      AuthorizationType: CUSTOM
-      AuthorizerId: !Ref AuthJwtAuthorizer
+      AuthorizationType: NONE
 
   # Allow API Gateway to invoke the authentication Lambda integration.
   AuthApiInvokePermission:

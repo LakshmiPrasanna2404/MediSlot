@@ -1,3 +1,4 @@
+
 AWSTemplateFormatVersion: '2010-09-09'
 Description: MediSlot environment-specific IAM roles and least-privilege execution policies
 
@@ -412,15 +413,14 @@ Resources:
       Roles:
         - !Ref DashboardEC2Role
 
-
-  # Dedicated CloudFormation service role for deploying Auth and API stacks.
+  # Dedicated CloudFormation service role for deploying Auth and App/API stacks.
   # GitHub Actions passes this role to CloudFormation; CloudFormation then
-  # creates the Lambda, log-group, and API Gateway resources.
+  # creates the Lambda, log-group, API Gateway, and SSM resources.
   CloudFormationExecutionRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub medislot-${Environment}-cloudformation-execution-role
-      Description: Service role assumed by CloudFormation for MediSlot Auth and API stacks
+      Description: Service role assumed by CloudFormation for MediSlot Auth and App/API stacks
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -429,7 +429,7 @@ Resources:
               Service: cloudformation.amazonaws.com
             Action: sts:AssumeRole
       Policies:
-        - PolicyName: MediSlotAuthApiDeploymentPermissions
+        - PolicyName: MediSlotAuthAppApiDeploymentPermissions
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
@@ -455,6 +455,7 @@ Resources:
                 Resource:
                   - !GetAtt AuthLambdaRole.Arn
                   - !GetAtt AuthorizerLambdaRole.Arn
+                  - !GetAtt AppLambdaRole.Arn
                 Condition:
                   StringEquals:
                     iam:PassedToService: lambda.amazonaws.com
@@ -481,7 +482,19 @@ Resources:
                 Effect: Allow
                 Action:
                   - s3:GetObject
-                Resource: !Sub arn:${AWS::Partition}:s3:::medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-artifacts/medislot/${Environment}/auth/*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-artifacts/medislot/${Environment}/auth/*
+                  - !Sub arn:${AWS::Partition}:s3:::medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-artifacts/medislot/${Environment}/app/*
+              # Permission required by CloudFormation AWS::SSM::Parameter resources
+              - Sid: ManageMediSlotAuthSSMParameters
+                Effect: Allow
+                Action:
+                  - ssm:PutParameter
+                  - ssm:GetParameter
+                  - ssm:DeleteParameter
+                  - ssm:AddTagsToResource
+                  - ssm:RemoveTagsFromResource
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/*
               - Sid: ManageMediSlotHttpApis
                 Effect: Allow
                 Action:
@@ -534,7 +547,7 @@ Outputs:
       Name: !Sub medislot-${Environment}-dashboard-profile-name
 
   CloudFormationExecutionRoleArn:
-    Description: ARN of the dedicated CloudFormation execution role for Auth and API deployments
+    Description: ARN of the dedicated CloudFormation execution role for Auth and App/API deployments
     Value: !GetAtt CloudFormationExecutionRole.Arn
     Export:
       Name: !Sub medislot-${Environment}-cloudformation-execution-role-arn

@@ -308,7 +308,7 @@ def save_profile(doctor_id, body):
 
     with db_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT user_id FROM users WHERE user_id=%s AND role='doctor' AND is_active=1",
+            cur.execute("SELECT user_id FROM users WHERE user_id=%s AND FIND_IN_SET('doctor', role) > 0 AND is_active=1",
                         (doctor_id,))
             if not cur.fetchone():
                 raise APIError(403, "Authenticated user is not an active doctor")

@@ -252,8 +252,9 @@ Resources:
       ApiId: !Ref AppHttpApi
       RouteKey: 'POST /auth/logout'
       Target: !Sub integrations/${AuthApiIntegration}
-      AuthorizationType: CUSTOM
-      AuthorizerId: !Ref AppJwtAuthorizer
+      # Logout accepts the refresh token as the Bearer token.
+      # Do not attach the access-token authorizer to this route.
+      AuthorizationType: NONE
 
   # ---------------------------------------------------------
   # Protected application routes

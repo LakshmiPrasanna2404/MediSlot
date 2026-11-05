@@ -26,33 +26,22 @@ env:
   ENVIRONMENT: ${{ github.event.inputs.environment || 'dev' }}
 
 jobs:
-
   # 1. VALIDATE
   lint-and-validate:
     name: Lint and Validate Templates
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
       - name: Check deployment configuration
         shell: bash
         run: |
           set -euo pipefail
+          [[ -n "$AWS_REGION" ]] || { echo "::error::AWS_REGION is missing"; exit 1; }
+          [[ -n "$AWS_ROLE_ARN" ]] || { echo "::error::AWS_ROLE_ARN is missing"; exit 1; }
 
-          [[ -n "$AWS_REGION" ]] || {
-            echo "::error::AWS_REGION is not configured"
-            exit 1
-          }
-
-          [[ -n "$AWS_ROLE_ARN" ]] || {
-            echo "::error::AWS_ROLE_ARN is not configured"
-            exit 1
-          }
-
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
@@ -61,29 +50,31 @@ jobs:
           python -m pip install --upgrade pip
           python -m pip install cfn-lint yamllint
 
-      - name: Check required templates
+      - name: Check required files
         shell: bash
         run: |
           set -euo pipefail
 
-          for template in \
+          for file in \
             infrastructure/network-stack.yaml \
             infrastructure/data-stack.yaml \
             infrastructure/iam-stack.yaml \
             infrastructure/auth-stack.yaml \
-            infrastructure/app-stack.yaml
+            infrastructure/app-stack.yaml \
+            lambda/auth/auth_handler.py \
+            lambda/auth/requirements.txt \
+            lambda/authorizer/authorizer_handler.py \
+            lambda/app/app_handler.py \
+            lambda/app/requirements.txt
           do
-            if [[ ! -s "$template" ]]; then
-              echo "::error::Missing template: $template"
+            test -s "$file" || {
+              echo "::error::Missing file: $file"
               exit 1
-            fi
+            }
           done
 
       - name: Lint templates
-        shell: bash
         run: |
-          set -euo pipefail
-
           yamllint -d relaxed \
             infrastructure/network-stack.yaml \
             infrastructure/data-stack.yaml \
@@ -98,8 +89,7 @@ jobs:
             infrastructure/auth-stack.yaml \
             infrastructure/app-stack.yaml
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
@@ -120,7 +110,6 @@ jobs:
             infrastructure/app-stack.yaml
           do
             echo "Validating $template"
-
             aws cloudformation validate-template \
               --template-body "file://${template}" \
               --region "$AWS_REGION" >/dev/null
@@ -141,10 +130,8 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy Network
-        shell: bash
         run: |
           set -euo pipefail
-
           aws cloudformation deploy \
             --stack-name "medislot-${ENVIRONMENT}-network" \
             --template-file infrastructure/network-stack.yaml \
@@ -153,18 +140,13 @@ jobs:
             --region "$AWS_REGION"
 
       - name: Verify Network stack
-        shell: bash
         run: |
-          set -euo pipefail
-
           STATUS=$(aws cloudformation describe-stacks \
             --stack-name "medislot-${ENVIRONMENT}-network" \
             --region "$AWS_REGION" \
-            --query 'Stacks[0].StackStatus' \
-            --output text)
+            --query 'Stacks[0].StackStatus' --output text)
 
           echo "Network stack status: $STATUS"
-
           [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
 
   # 3. DATA
@@ -182,10 +164,8 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy Data
-        shell: bash
         run: |
           set -euo pipefail
-
           aws cloudformation deploy \
             --stack-name "medislot-${ENVIRONMENT}-data" \
             --template-file infrastructure/data-stack.yaml \
@@ -195,18 +175,13 @@ jobs:
             --region "$AWS_REGION"
 
       - name: Verify Data stack
-        shell: bash
         run: |
-          set -euo pipefail
-
           STATUS=$(aws cloudformation describe-stacks \
             --stack-name "medislot-${ENVIRONMENT}-data" \
             --region "$AWS_REGION" \
-            --query 'Stacks[0].StackStatus' \
-            --output text)
+            --query 'Stacks[0].StackStatus' --output text)
 
           echo "Data stack status: $STATUS"
-
           [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
 
   # 4. IAM
@@ -224,10 +199,8 @@ jobs:
           aws-region: ${{ env.AWS_REGION }}
 
       - name: Deploy IAM
-        shell: bash
         run: |
           set -euo pipefail
-
           aws cloudformation deploy \
             --stack-name "medislot-${ENVIRONMENT}-iam" \
             --template-file infrastructure/iam-stack.yaml \
@@ -237,37 +210,29 @@ jobs:
             --region "$AWS_REGION"
 
       - name: Verify IAM stack
-        shell: bash
         run: |
-          set -euo pipefail
-
           STATUS=$(aws cloudformation describe-stacks \
             --stack-name "medislot-${ENVIRONMENT}-iam" \
             --region "$AWS_REGION" \
-            --query 'Stacks[0].StackStatus' \
-            --output text)
+            --query 'Stacks[0].StackStatus' --output text)
 
           echo "IAM stack status: $STATUS"
-
           [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
 
-  # 5. APP LAMBDA AND API
-  deploy-app:
-    name: Deploy App Lambda and API
+  # 5. AUTHENTICATION AND JWT AUTHORIZER
+  deploy-auth:
+    name: Deploy Auth and Authorizer Lambdas
     runs-on: ubuntu-latest
     needs: deploy-iam
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
 
-      - name: Set up Python
-        uses: actions/setup-python@v5
+      - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+      - uses: aws-actions/configure-aws-credentials@v4
         with:
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
@@ -284,24 +249,167 @@ jobs:
             --query "Stacks[0].Outputs[?OutputKey=='ArtifactBucketName'].OutputValue | [0]" \
             --output text)
 
-          CFN_EXECUTION_ROLE_ARN=$(aws cloudformation describe-stacks \
+          EXECUTION_ROLE=$(aws cloudformation describe-stacks \
             --stack-name "medislot-${ENVIRONMENT}-iam" \
             --region "$AWS_REGION" \
             --query "Stacks[0].Outputs[?OutputKey=='CloudFormationExecutionRoleArn'].OutputValue | [0]" \
             --output text)
 
-          if [[ -z "$BUCKET" || "$BUCKET" == "None" ]]; then
-            echo "::error::ArtifactBucketName output is missing"
+          [[ -n "$BUCKET" && "$BUCKET" != "None" ]] || {
+            echo "::error::ArtifactBucketName output missing"
             exit 1
-          fi
+          }
 
-          if [[ -z "$CFN_EXECUTION_ROLE_ARN" || "$CFN_EXECUTION_ROLE_ARN" == "None" ]]; then
-            echo "::error::CloudFormationExecutionRoleArn output is missing"
+          [[ -n "$EXECUTION_ROLE" && "$EXECUTION_ROLE" != "None" ]] || {
+            echo "::error::CloudFormationExecutionRoleArn output missing"
             exit 1
-          fi
+          }
 
           echo "bucket=$BUCKET" >> "$GITHUB_OUTPUT"
-          echo "execution_role=$CFN_EXECUTION_ROLE_ARN" >> "$GITHUB_OUTPUT"
+          echo "execution_role=$EXECUTION_ROLE" >> "$GITHUB_OUTPUT"
+
+      - name: Package Auth Lambda
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s lambda/auth/auth_handler.py
+          test -s lambda/auth/requirements.txt
+
+          rm -rf build/auth auth.zip
+          mkdir -p build/auth
+
+          python -m pip install \
+            --only-binary=:all: \
+            -r lambda/auth/requirements.txt \
+            -t build/auth
+
+          cp lambda/auth/auth_handler.py build/auth/
+
+          (cd build/auth && zip -qr ../../auth.zip .)
+          test -s auth.zip
+
+      - name: Package Authorizer Lambda
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s lambda/authorizer/authorizer_handler.py
+
+          rm -rf build/authorizer authorizer.zip
+          mkdir -p build/authorizer
+
+          cp lambda/authorizer/authorizer_handler.py build/authorizer/
+
+          (cd build/authorizer && zip -qr ../../authorizer.zip .)
+          test -s authorizer.zip
+
+      - name: Upload Auth packages
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          aws s3 cp auth.zip \
+            "s3://${{ steps.deployment.outputs.bucket }}/medislot/${ENVIRONMENT}/auth/auth-${GITHUB_SHA}.zip" \
+            --region "$AWS_REGION"
+
+          aws s3 cp authorizer.zip \
+            "s3://${{ steps.deployment.outputs.bucket }}/medislot/${ENVIRONMENT}/auth/authorizer-${GITHUB_SHA}.zip" \
+            --region "$AWS_REGION"
+
+      - name: Validate Auth template
+        run: |
+          aws cloudformation validate-template \
+            --template-body file://infrastructure/auth-stack.yaml \
+            --region "$AWS_REGION" >/dev/null
+
+      - name: Deploy Auth and Authorizer
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          aws cloudformation deploy \
+            --stack-name "medislot-${ENVIRONMENT}-auth" \
+            --template-file infrastructure/auth-stack.yaml \
+            --role-arn "${{ steps.deployment.outputs.execution_role }}" \
+            --parameter-overrides \
+              Environment="${ENVIRONMENT}" \
+              AuthCodeS3Bucket="${{ steps.deployment.outputs.bucket }}" \
+              AuthCodeS3Key="medislot/${ENVIRONMENT}/auth/auth-${GITHUB_SHA}.zip" \
+              AuthorizerCodeS3Bucket="${{ steps.deployment.outputs.bucket }}" \
+              AuthorizerCodeS3Key="medislot/${ENVIRONMENT}/auth/authorizer-${GITHUB_SHA}.zip" \
+            --no-fail-on-empty-changeset \
+            --region "$AWS_REGION"
+
+      - name: Verify Auth and Authorizer Lambdas
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          for function in auth authorizer; do
+            aws lambda get-function-configuration \
+              --function-name "medislot-${ENVIRONMENT}-${function}" \
+              --region "$AWS_REGION" \
+              --query '{Name:FunctionName,Runtime:Runtime,Handler:Handler,State:State}' \
+              --output table
+          done
+
+      - name: Verify Auth stack
+        run: |
+          aws cloudformation describe-stacks \
+            --stack-name "medislot-${ENVIRONMENT}-auth" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].Outputs' \
+            --output table
+
+  # 6. DOCTOR APP LAMBDA AND API
+  deploy-app:
+    name: Deploy App Lambda and API
+    runs-on: ubuntu-latest
+    needs: deploy-auth
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Read deployment configuration
+        id: deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUCKET=$(aws cloudformation describe-stacks \
+            --stack-name "medislot-${ENVIRONMENT}-data" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='ArtifactBucketName'].OutputValue | [0]" \
+            --output text)
+
+          EXECUTION_ROLE=$(aws cloudformation describe-stacks \
+            --stack-name "medislot-${ENVIRONMENT}-iam" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='CloudFormationExecutionRoleArn'].OutputValue | [0]" \
+            --output text)
+
+          [[ -n "$BUCKET" && "$BUCKET" != "None" ]] || {
+            echo "::error::ArtifactBucketName output missing"
+            exit 1
+          }
+
+          [[ -n "$EXECUTION_ROLE" && "$EXECUTION_ROLE" != "None" ]] || {
+            echo "::error::CloudFormationExecutionRoleArn output missing"
+            exit 1
+          }
+
+          echo "bucket=$BUCKET" >> "$GITHUB_OUTPUT"
+          echo "execution_role=$EXECUTION_ROLE" >> "$GITHUB_OUTPUT"
 
       - name: Package App Lambda
         shell: bash
@@ -321,30 +429,14 @@ jobs:
 
           cp lambda/app/app_handler.py build/app/
 
-          (
-            cd build/app
-            zip -qr ../../app.zip .
-          )
-
+          (cd build/app && zip -qr ../../app.zip .)
           test -s app.zip
 
       - name: Upload App Lambda package
-        shell: bash
         run: |
-          set -euo pipefail
-
           aws s3 cp app.zip \
-            "s3://${{ steps.deployment.outputs.bucket }}/lambda/app-${GITHUB_SHA}.zip" \
+            "s3://${{ steps.deployment.outputs.bucket }}/medislot/${ENVIRONMENT}/app/app-${GITHUB_SHA}.zip" \
             --region "$AWS_REGION"
-
-      - name: Validate App template
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          aws cloudformation validate-template \
-            --template-body file://infrastructure/app-stack.yaml \
-            --region "$AWS_REGION" >/dev/null
 
       - name: Deploy App and API
         shell: bash
@@ -358,15 +450,12 @@ jobs:
             --parameter-overrides \
               Environment="${ENVIRONMENT}" \
               AppCodeS3Bucket="${{ steps.deployment.outputs.bucket }}" \
-              AppCodeS3Key="lambda/app-${GITHUB_SHA}.zip" \
+              AppCodeS3Key="medislot/${ENVIRONMENT}/app/app-${GITHUB_SHA}.zip" \
             --no-fail-on-empty-changeset \
             --region "$AWS_REGION"
 
       - name: Verify App Lambda
-        shell: bash
         run: |
-          set -euo pipefail
-
           aws lambda get-function-configuration \
             --function-name "medislot-${ENVIRONMENT}-app" \
             --region "$AWS_REGION" \
@@ -374,10 +463,7 @@ jobs:
             --output table
 
       - name: Verify API outputs
-        shell: bash
         run: |
-          set -euo pipefail
-
           aws cloudformation describe-stacks \
             --stack-name "medislot-${ENVIRONMENT}-api" \
             --region "$AWS_REGION" \
@@ -395,9 +481,9 @@ jobs:
             --query "Stacks[0].Outputs[?OutputKey=='AppApiUrl'].OutputValue | [0]" \
             --output text)
 
-          if [[ -z "$API_URL" || "$API_URL" == "None" ]]; then
+          [[ -n "$API_URL" && "$API_URL" != "None" ]] || {
             echo "::error::AppApiUrl output is missing"
             exit 1
-          fi
+          }
 
           echo "MediSlot App API URL: $API_URL"

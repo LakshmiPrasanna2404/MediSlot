@@ -1,10 +1,11 @@
-﻿"""MediSlot authentication Lambda.
-
-Doctor/patient registration and login, opaque refresh-token rotation, and logout.
-Passwords use bcrypt. Authentication settings and secrets are loaded from SSM.
-Refresh tokens are stored only as SHA-256 hashes.
+﻿"""
+MediSlot Authentication Lambda.
+Doctor/patient registration and login, opaque refresh-token rotation,
+and logout.
+Passwords use bcrypt.
+Authentication settings and secrets are loaded from SSM.
+Refresh tokens are stored only as SHA-256 hashes in DynamoDB.
 """
-
 import base64
 import hashlib
 import hmac
@@ -13,43 +14,60 @@ import os
 import re
 import secrets
 import time
+import traceback
 import uuid
-
 import boto3
 import bcrypt
 import pymysql
 from botocore.config import Config
 from botocore.exceptions import ClientError
-
-
+# ---------------------------------------------------------
+# AWS CONFIGURATION
+# ---------------------------------------------------------
 REGION = os.environ["AWS_REGION"]
 ENVIRONMENT = os.environ["ENVIRONMENT"]
 CONFIG_PREFIX = f"/medislot/{ENVIRONMENT}/auth"
-
 AWS_CONFIG = Config(
     connect_timeout=3,
     read_timeout=4,
     retries={"total_max_attempts": 2},
 )
-
-SSM = boto3.client("ssm", region_name=REGION, config=AWS_CONFIG)
-DDB = boto3.resource("dynamodb", region_name=REGION, config=AWS_CONFIG)
-
-TOKEN_TABLE = DDB.Table(os.environ["TOKEN_REVOCATIONS_TABLE"])
-REFRESH_TABLE = DDB.Table(os.environ["REFRESH_TOKENS_TABLE"])
-
+SSM = boto3.client(
+    "ssm",
+    region_name=REGION,
+    config=AWS_CONFIG,
+)
+DDB = boto3.resource(
+    "dynamodb",
+    region_name=REGION,
+    config=AWS_CONFIG,
+)
+# Low-level client for transactions that use typed values ({"S": ...}, {"N": ...}).
+# Do NOT use DDB.meta.client for these: the resource's client auto-serializes
+# values, so typed dicts would be stored as Maps and fail key-schema validation.
+DDB_CLIENT = boto3.client(
+    "dynamodb",
+    region_name=REGION,
+    config=AWS_CONFIG,
+)
+TOKEN_TABLE = DDB.Table(
+    os.environ["TOKEN_REVOCATIONS_TABLE"]
+)
+REFRESH_TABLE = DDB.Table(
+    os.environ["REFRESH_TOKENS_TABLE"]
+)
 JWT_PARAMETER = os.environ["JWT_SECRET_PARAMETER"]
 DB_USERNAME_PARAMETER = os.environ["DB_USERNAME_PARAMETER"]
 DB_PASSWORD_PARAMETER = os.environ["DB_PASSWORD_PARAMETER"]
 DB_HOST = os.environ["DB_HOST"]
 DB_PORT = int(os.environ["DB_PORT"])
 DB_NAME = os.environ["DB_NAME"]
-
 _secret = None
 _credentials = None
 _settings = None
-
-
+# ---------------------------------------------------------
+# COMMON RESPONSE
+# ---------------------------------------------------------
 def response(status, payload):
     return {
         "statusCode": status,
@@ -59,64 +77,91 @@ def response(status, payload):
         },
         "body": json.dumps(payload),
     }
-
-
+# ---------------------------------------------------------
+# SSM CONFIGURATION
+# ---------------------------------------------------------
 def parameter_value(name, decrypt=False):
-    """Read a required SSM parameter. Missing configuration fails closed."""
-    result = SSM.get_parameter(Name=name, WithDecryption=decrypt)
+    result = SSM.get_parameter(
+        Name=name,
+        WithDecryption=decrypt,
+    )
     return result["Parameter"]["Value"]
-
-
 def settings():
-    """Load required authentication settings from SSM once per Lambda container."""
     global _settings
     if _settings is None:
         _settings = {
             "access_token_seconds": int(
-                parameter_value(f"{CONFIG_PREFIX}/access-token-seconds")
+                parameter_value(
+                    f"{CONFIG_PREFIX}/access-token-seconds"
+                )
             ),
             "refresh_token_seconds": int(
-                parameter_value(f"{CONFIG_PREFIX}/refresh-token-seconds")
+                parameter_value(
+                    f"{CONFIG_PREFIX}/refresh-token-seconds"
+                )
             ),
             "bcrypt_rounds": int(
-                parameter_value(f"{CONFIG_PREFIX}/bcrypt-rounds")
+                parameter_value(
+                    f"{CONFIG_PREFIX}/bcrypt-rounds"
+                )
             ),
             "password_min_length": int(
-                parameter_value(f"{CONFIG_PREFIX}/password-min-length")
+                parameter_value(
+                    f"{CONFIG_PREFIX}/password-min-length"
+                )
             ),
         }
         if not 4 <= _settings["bcrypt_rounds"] <= 16:
-            raise RuntimeError("bcrypt-rounds must be between 4 and 16")
+            raise RuntimeError(
+                "bcrypt-rounds must be between 4 and 16"
+            )
         if _settings["password_min_length"] <= 0:
-            raise RuntimeError("password-min-length must be positive")
+            raise RuntimeError(
+                "password-min-length must be positive"
+            )
         if (
             _settings["access_token_seconds"] <= 0
             or _settings["refresh_token_seconds"] <= 0
         ):
-            raise RuntimeError("Token lifetimes must be positive")
+            raise RuntimeError(
+                "Token lifetimes must be positive"
+            )
     return _settings
-
-
 def jwt_secret():
     global _secret
     if _secret is None:
-        _secret = parameter_value(JWT_PARAMETER, decrypt=True).encode("utf-8")
+        _secret = parameter_value(
+            JWT_PARAMETER,
+            decrypt=True,
+        ).encode("utf-8")
         if len(_secret) < 32:
-            raise RuntimeError("JWT signing secret must be at least 32 bytes")
+            raise RuntimeError(
+                "JWT signing secret must be at least 32 bytes"
+            )
     return _secret
-
-
 def db_credentials():
     global _credentials
     if _credentials is None:
-        username = parameter_value(DB_USERNAME_PARAMETER, decrypt=True)
-        password = parameter_value(DB_PASSWORD_PARAMETER, decrypt=True)
+        username = parameter_value(
+            DB_USERNAME_PARAMETER,
+            decrypt=True,
+        )
+        password = parameter_value(
+            DB_PASSWORD_PARAMETER,
+            decrypt=True,
+        )
         if not username or not password:
-            raise RuntimeError("Database credentials are empty")
-        _credentials = {"username": username, "password": password}
+            raise RuntimeError(
+                "Database credentials are empty"
+            )
+        _credentials = {
+            "username": username,
+            "password": password,
+        }
     return _credentials
-
-
+# ---------------------------------------------------------
+# MYSQL CONNECTION
+# ---------------------------------------------------------
 def db_connection():
     creds = db_credentials()
     return pymysql.connect(
@@ -130,22 +175,24 @@ def db_connection():
         write_timeout=5,
         autocommit=True,
         cursorclass=pymysql.cursors.DictCursor,
-        # TLS is enabled; verify the RDS CA bundle is included/configured
-        # for this Lambda deployment before production use.
         ssl={"check_hostname": True},
     )
-
-
+# ---------------------------------------------------------
+# JWT HELPERS
+# ---------------------------------------------------------
 def b64url(data):
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode("ascii")
-
-
+    return (
+        base64.urlsafe_b64encode(data)
+        .rstrip(b"=")
+        .decode("ascii")
+    )
 def b64url_decode(value):
-    return base64.urlsafe_b64decode(value + "=" * (-len(value) % 4))
-
-
+    return base64.urlsafe_b64decode(
+        value + "=" * (-len(value) % 4)
+    )
 def create_access_token(user):
     now = int(time.time())
+    # Exactly five claims, as specified in the project design.
     claims = {
         "sub": str(user["user_id"]),
         "role": user["role"],
@@ -160,7 +207,10 @@ def create_access_token(user):
         ).encode("utf-8")
     )
     payload = b64url(
-        json.dumps(claims, separators=(",", ":")).encode("utf-8")
+        json.dumps(
+            claims,
+            separators=(",", ":"),
+        ).encode("utf-8")
     )
     message = f"{header}.{payload}"
     signature = b64url(
@@ -171,30 +221,25 @@ def create_access_token(user):
         ).digest()
     )
     return f"{message}.{signature}", claims
-
-
 def decode_access_token(token):
     try:
         if not isinstance(token, str):
             return None
-
         head, body, signature = token.split(".")
         header = json.loads(b64url_decode(head))
         claims = json.loads(b64url_decode(body))
-
         if (
             not isinstance(header, dict)
             or header.get("alg") != "HS256"
             or header.get("typ") != "JWT"
         ):
             return None
-
-        # The project format specifies exactly these five claims.
-        if not isinstance(claims, dict) or set(claims) != {
+        if not isinstance(claims, dict):
+            return None
+        if set(claims) != {
             "sub", "role", "iat", "exp", "jti"
         }:
             return None
-
         expected = b64url(
             hmac.new(
                 jwt_secret(),
@@ -204,43 +249,45 @@ def decode_access_token(token):
         )
         if not hmac.compare_digest(expected, signature):
             return None
-
         if claims["role"] not in ("doctor", "patient"):
             return None
-        if not isinstance(claims["sub"], str) or not claims["sub"]:
+        if not isinstance(claims["sub"], str):
             return None
-        if not isinstance(claims["jti"], str) or not claims["jti"]:
+        if not claims["sub"]:
             return None
-        if type(claims["iat"]) is not int or type(claims["exp"]) is not int:
+        if not isinstance(claims["jti"], str):
             return None
-
+        if not claims["jti"]:
+            return None
+        if (
+            type(claims["iat"]) is not int
+            or type(claims["exp"]) is not int
+        ):
+            return None
         now = int(time.time())
         if claims["iat"] > now or claims["exp"] <= now:
             return None
-
         return claims
-    except (ValueError, TypeError, KeyError, json.JSONDecodeError):
-        return None
     except Exception:
         return None
-
-
+# ---------------------------------------------------------
+# PASSWORD HASHING - BCRYPT
+# ---------------------------------------------------------
 def password_is_valid(password):
     return (
         isinstance(password, str)
         and len(password) >= settings()["password_min_length"]
         and re.search(r"[A-Za-z]", password) is not None
         and re.search(r"[0-9]", password) is not None
+        and len(password.encode("utf-8")) <= 72
     )
-
-
 def hash_password(password):
     return bcrypt.hashpw(
         password.encode("utf-8"),
-        bcrypt.gensalt(rounds=settings()["bcrypt_rounds"]),
+        bcrypt.gensalt(
+            rounds=settings()["bcrypt_rounds"]
+        ),
     ).decode("utf-8")
-
-
 def verify_password(password, stored_hash):
     try:
         return bcrypt.checkpw(
@@ -249,21 +296,37 @@ def verify_password(password, stored_hash):
         )
     except (ValueError, TypeError, AttributeError):
         return False
-
-
+# ---------------------------------------------------------
+# REFRESH TOKEN HELPERS
+# ---------------------------------------------------------
 def token_hash(token):
-    return hashlib.sha256(token.encode("utf-8")).hexdigest()
-
-
-def create_refresh_token(user_id):
+    return hashlib.sha256(
+        token.encode("utf-8")
+    ).hexdigest()
+def expiry_timestamp(value):
+    """
+    Convert an expiry value into an integer timestamp.
+    Supports normal DynamoDB numeric values and legacy
+    AttributeValue-shaped maps such as {"N": "1790000000"}.
+    """
+    if isinstance(value, dict):
+        value = value.get(
+            "N",
+            value.get("S", 0),
+        )
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return 0
+def create_refresh_token(user_id, role):
     raw_token = secrets.token_urlsafe(48)
     now = int(time.time())
     expires = now + settings()["refresh_token_seconds"]
-
     REFRESH_TABLE.put_item(
         Item={
             "tokenHash": token_hash(raw_token),
             "userId": str(user_id),
+            "role": role,
             "createdAt": now,
             "expiresAt": expires,
         },
@@ -271,47 +334,61 @@ def create_refresh_token(user_id):
     )
     return raw_token, expires
 
-
-def rotate_refresh_token(old_token, user):
+def rotate_refresh_token(old_token, user, role):
+    """Atomically consume the old refresh token and create its replacement."""
     now = int(time.time())
+    old_hash = token_hash(old_token)
+    user_id = str(user["user_id"])
+
+    old_item = REFRESH_TABLE.get_item(
+        Key={"tokenHash": old_hash},
+        ConsistentRead=True,
+    ).get("Item")
+    if not old_item:
+        raise ValueError("Refresh token does not exist")
+    if str(old_item.get("userId")) != user_id:
+        raise ValueError("Refresh token user mismatch")
+    if old_item.get("role") != role:
+        raise ValueError("Refresh token role mismatch")
+    if expiry_timestamp(old_item.get("expiresAt")) <= now:
+        raise ValueError("Refresh token has expired")
+
+    session_user = dict(user)
+    session_user["role"] = role
+    access_token, _ = create_access_token(session_user)
     new_token = secrets.token_urlsafe(48)
+    new_hash = token_hash(new_token)
     expires = now + settings()["refresh_token_seconds"]
 
-    old_hash = token_hash(old_token)
-    new_hash = token_hash(new_token)
-
-    # Consume the old token and create its replacement atomically.
-    DDB.meta.client.transact_write_items(
+    DDB_CLIENT.transact_write_items(
         TransactItems=[
-            {
-                "Delete": {
-                    "TableName": REFRESH_TABLE.name,
-                    "Key": {"tokenHash": {"S": old_hash}},
-                    "ConditionExpression": (
-                        "userId = :user_id AND expiresAt > :now"
-                    ),
-                    "ExpressionAttributeValues": {
-                        ":user_id": {"S": str(user["user_id"])},
-                        ":now": {"N": str(now)},
-                    },
-                }
-            },
             {
                 "Put": {
                     "TableName": REFRESH_TABLE.name,
                     "Item": {
                         "tokenHash": {"S": new_hash},
-                        "userId": {"S": str(user["user_id"])},
+                        "userId": {"S": user_id},
+                        "role": {"S": role},
                         "createdAt": {"N": str(now)},
                         "expiresAt": {"N": str(expires)},
                     },
                     "ConditionExpression": "attribute_not_exists(tokenHash)",
                 }
             },
+            {
+                "Delete": {
+                    "TableName": REFRESH_TABLE.name,
+                    "Key": {"tokenHash": {"S": old_hash}},
+                    "ConditionExpression": (
+                        "userId = :user_id AND attribute_exists(expiresAt)"
+                    ),
+                    "ExpressionAttributeValues": {
+                        ":user_id": {"S": user_id},
+                    },
+                }
+            },
         ]
     )
-
-    access_token, _ = create_access_token(user)
     return {
         "token_type": "Bearer",
         "access_token": access_token,
@@ -320,12 +397,13 @@ def rotate_refresh_token(old_token, user):
         "refresh_expires_in": settings()["refresh_token_seconds"],
     }
 
-
 def register(data, role):
     name = data.get("full_name")
     email = data.get("email")
     password = data.get("password")
 
+    if role not in ("doctor", "patient"):
+        return response(400, {"error": "Invalid registration role"})
     if not isinstance(name, str) or not name.strip() or len(name.strip()) > 120:
         return response(400, {"error": "Valid full_name is required"})
     if (
@@ -340,49 +418,118 @@ def register(data, role):
             400,
             {
                 "error": (
-                    "Password must meet the configured minimum length and contain "
-                    "at least one letter and one digit"
+                    "Password must meet the configured minimum length "
+                    "and contain at least one letter and one digit"
                 )
             },
         )
 
     name = name.strip()
     email = email.strip().lower()
-    user_id = str(uuid.uuid4())
-
     try:
         with db_connection() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    """INSERT INTO users
-                       (user_id, full_name, email, password_hash, role, is_active)
-                       VALUES (%s, %s, %s, %s, %s, 1)""",
-                    (user_id, name, email, hash_password(password), role),
-                )
+            conn.begin()
+            try:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        """
+                        SELECT user_id, full_name, email, password_hash, role, is_active
+                        FROM users
+                        WHERE email = %s
+                        LIMIT 1
+                        FOR UPDATE
+                        """,
+                        (email,),
+                    )
+                    existing = cur.fetchone()
+
+                    if existing:
+                        if not verify_password(password, existing["password_hash"]):
+                            conn.rollback()
+                            return response(
+                                409,
+                                {"error": "This email already has an account. Use the existing account password."},
+                            )
+
+                        existing_roles = [
+                            item.strip()
+                            for item in str(existing["role"]).split(",")
+                            if item.strip()
+                        ]
+                        if role in existing_roles:
+                            conn.rollback()
+                            return response(
+                                409,
+                                {"error": f"This account is already registered as a {role}."},
+                            )
+
+                        cur.execute(
+                            """
+                            UPDATE users
+                            SET role = CONCAT_WS(',', role, %s)
+                            WHERE user_id = %s
+                            """,
+                            (role, existing["user_id"]),
+                        )
+                        user_id = str(existing["user_id"])
+                        full_name = existing["full_name"]
+                        assigned_roles = existing_roles + [role]
+                        message = f"{role.capitalize()} role added to existing account"
+                        status = 200
+                    else:
+                        user_id = str(uuid.uuid4())
+                        cur.execute(
+                            """
+                            INSERT INTO users
+                                (user_id, full_name, email, password_hash, role, is_active)
+                            VALUES (%s, %s, %s, %s, %s, 1)
+                            """,
+                            (
+                                user_id,
+                                name,
+                                email,
+                                hash_password(password),
+                                role,
+                            ),
+                        )
+                        full_name = name
+                        assigned_roles = [role]
+                        message = "Registration successful"
+                        status = 201
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
 
         return response(
-            201,
+            status,
             {
-                "message": "Registration successful",
+                "message": message,
                 "user": {
                     "user_id": user_id,
-                    "full_name": name,
+                    "full_name": full_name,
                     "email": email,
                     "role": role,
+                    "roles": assigned_roles,
                 },
             },
         )
     except pymysql.err.IntegrityError:
-        return response(409, {"error": "An account with this email already exists"})
+        return response(
+            409,
+            {"error": "Account registration conflicted with an existing account. Please retry."},
+        )
     except Exception as exc:
         print(f"Registration failed: {type(exc).__name__}: {exc}")
+        traceback.print_exc()
         return response(500, {"error": "Internal server error"})
-
 
 def login(data, role):
     email = data.get("email")
     password = data.get("password")
 
+    if role not in ("doctor", "patient"):
+        return response(400, {"error": "Invalid login role"})
     if not isinstance(email, str) or not email.strip():
         return response(400, {"error": "email is required"})
     if not isinstance(password, str):
@@ -392,22 +539,32 @@ def login(data, role):
         with db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """SELECT user_id, full_name, email, password_hash, role, is_active
-                       FROM users WHERE email = %s LIMIT 1""",
+                    """
+                    SELECT user_id, full_name, email, password_hash, role, is_active
+                    FROM users
+                    WHERE email = %s
+                    LIMIT 1
+                    """,
                     (email.strip().lower(),),
                 )
                 user = cur.fetchone()
 
+        user_roles = (
+            [item.strip() for item in str(user["role"]).split(",") if item.strip()]
+            if user else []
+        )
         if (
             not user
             or not user["is_active"]
-            or user["role"] != role
+            or role not in user_roles
             or not verify_password(password, user["password_hash"])
         ):
             return response(401, {"error": "Invalid email or password"})
 
-        access_token, _ = create_access_token(user)
-        refresh_token, _ = create_refresh_token(user["user_id"])
+        session_user = dict(user)
+        session_user["role"] = role
+        access_token, _ = create_access_token(session_user)
+        refresh_token, _ = create_refresh_token(user["user_id"], role)
 
         return response(
             200,
@@ -421,102 +578,180 @@ def login(data, role):
                     "user_id": str(user["user_id"]),
                     "full_name": user["full_name"],
                     "email": user["email"],
-                    "role": user["role"],
+                    "role": role,
+                    "roles": user_roles,
                 },
             },
         )
     except Exception as exc:
         print(f"Login failed: {type(exc).__name__}: {exc}")
+        traceback.print_exc()
         return response(500, {"error": "Internal server error"})
 
-
 def refresh(data):
-    raw_token = data.get("refresh_token")
-    if not isinstance(raw_token, str) or not raw_token:
+    raw_token = data.get("refresh_token") or data.get("refreshToken")
+    if not isinstance(raw_token, str) or not raw_token.strip():
         return response(401, {"error": "Invalid or expired refresh token"})
 
+    raw_token = raw_token.strip()
     try:
         item = REFRESH_TABLE.get_item(
             Key={"tokenHash": token_hash(raw_token)},
             ConsistentRead=True,
         ).get("Item")
-
-        if not item or int(item.get("expiresAt", 0)) <= int(time.time()):
+        if not item or expiry_timestamp(item.get("expiresAt")) <= int(time.time()):
             return response(401, {"error": "Invalid or expired refresh token"})
 
         with db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    """SELECT user_id, full_name, email, role, is_active
-                       FROM users WHERE user_id = %s LIMIT 1""",
+                    """
+                    SELECT user_id, full_name, email, role, is_active
+                    FROM users
+                    WHERE user_id = %s
+                    LIMIT 1
+                    """,
                     (item["userId"],),
                 )
                 user = cur.fetchone()
 
-        if not user or not user["is_active"]:
+        if (
+            not user
+            or not user["is_active"]
+            or str(user["user_id"]) != str(item["userId"])
+        ):
             return response(401, {"error": "Invalid refresh token"})
 
-        tokens = rotate_refresh_token(raw_token, user)
-        return response(200, tokens)
+        user_roles = [
+            value.strip()
+            for value in str(user["role"]).split(",")
+            if value.strip()
+        ]
+        selected_role = item.get("role")
 
+        # Old refresh records did not store a session role. They are safe to
+        # refresh only when the account has exactly one role; otherwise the
+        # user must log in again and select doctor or patient explicitly.
+        if not selected_role:
+            if len(user_roles) != 1:
+                return response(
+                    401,
+                    {"error": "Please log in again and select your account role"},
+                )
+            selected_role = user_roles[0]
+
+        if selected_role not in ("doctor", "patient") or selected_role not in user_roles:
+            return response(401, {"error": "Refresh token role is no longer valid"})
+
+        return response(
+            200,
+            rotate_refresh_token(raw_token, user, selected_role),
+        )
+    except ValueError:
+        return response(
+            401,
+            {"error": "Refresh token has expired, already been used, or is invalid"},
+        )
     except ClientError as exc:
-        code = exc.response.get("Error", {}).get("Code")
-        if code in ("TransactionCanceledException", "ConditionalCheckFailedException"):
+        error = exc.response.get("Error", {})
+        code = error.get("Code")
+        reasons = exc.response.get("CancellationReasons")
+        print("Refresh DynamoDB error code:", code)
+        print("Refresh DynamoDB error message:", error.get("Message"))
+        if reasons:
+            print("Refresh DynamoDB cancellation reasons:", reasons)
+
+        if code == "ConditionalCheckFailedException":
             return response(
                 401,
-                {"error": "Refresh token has already been used or is invalid"},
+                {"error": "Refresh token is invalid or has already been used"},
             )
-        print(f"Refresh failed: {type(exc).__name__}")
+        if code == "TransactionCanceledException":
+            cancellation_reasons = exc.response.get("CancellationReasons") or []
+            if any(
+                reason.get("Code") == "ConditionalCheckFailed"
+                for reason in cancellation_reasons
+            ):
+                return response(
+                    401,
+                    {"error": "Refresh token is invalid or has already been used"},
+                )
+            print("Refresh transaction cancellation reasons:", cancellation_reasons)
+            traceback.print_exc()
+            return response(500, {"error": "Unable to rotate refresh token"})
+
+        print(f"Refresh failed: {type(exc).__name__}: {exc}")
+        traceback.print_exc()
         return response(500, {"error": "Internal server error"})
     except Exception as exc:
         print(f"Refresh failed: {type(exc).__name__}: {exc}")
+        traceback.print_exc()
         return response(500, {"error": "Internal server error"})
 
-
 def logout(event, data):
+    """
+    Log out by consuming a refresh token.
+    The refresh token may be sent in the JSON body ("refresh_token") or as
+    the Bearer value in the Authorization header. If the Bearer value is a
+    valid access token instead, it is optional: when present, its jti is
+    also revoked and its user must match the refresh token's owner.
+    """
     headers = {
         str(key).lower(): value
         for key, value in (event.get("headers") or {}).items()
     }
     authorization = headers.get("authorization", "")
-
-    if (
-        not isinstance(authorization, str)
-        or not authorization.lower().startswith("bearer ")
-    ):
-        return response(401, {"error": "Valid bearer access token required"})
-
-    claims = decode_access_token(authorization.split(None, 1)[1])
-    if not claims:
-        return response(401, {"error": "Valid bearer access token required"})
-
-    raw_refresh_token = data.get("refresh_token")
-    if not isinstance(raw_refresh_token, str) or not raw_refresh_token:
+    bearer = None
+    if isinstance(authorization, str) and authorization.lower().startswith("bearer "):
+        parts = authorization.split(None, 1)
+        bearer = parts[1].strip() if len(parts) == 2 else None
+    # A valid access token (optional) lets us revoke its jti as well.
+    claims = decode_access_token(bearer) if bearer else None
+    raw_refresh_token = data.get("refresh_token") or data.get("refreshToken")
+    # Refresh token sent in the Authorization header instead of the body.
+    if not raw_refresh_token and bearer and not claims:
+        raw_refresh_token = bearer
+    if not isinstance(raw_refresh_token, str) or not raw_refresh_token.strip():
         return response(400, {"error": "refresh_token is required for logout"})
-
-    now = int(time.time())
     try:
-        # Delete the user's refresh session and revoke the access-token jti
-        # in one transaction, so neither operation can succeed alone.
-        DDB.meta.client.transact_write_items(
-            TransactItems=[
-                {
-                    "Delete": {
-                        "TableName": REFRESH_TABLE.name,
-                        "Key": {
-                            "tokenHash": {
-                                "S": token_hash(raw_refresh_token)
-                            }
-                        },
-                        "ConditionExpression": (
-                            "userId = :user_id AND expiresAt > :now"
-                        ),
-                        "ExpressionAttributeValues": {
-                            ":user_id": {"S": claims["sub"]},
-                            ":now": {"N": str(now)},
-                        },
-                    }
-                },
+        old_hash = token_hash(raw_refresh_token.strip())
+        refresh_item = REFRESH_TABLE.get_item(
+            Key={"tokenHash": old_hash},
+            ConsistentRead=True,
+        ).get("Item")
+        if (
+            not refresh_item
+            or expiry_timestamp(refresh_item.get("expiresAt")) <= int(time.time())
+        ):
+            return response(
+                400,
+                {"error": "Refresh token is invalid or expired"},
+            )
+        owner_id = str(refresh_item.get("userId"))
+        if claims and claims["sub"] != owner_id:
+            return response(
+                400,
+                {"error": "Refresh token belongs to another user"},
+            )
+        transact_items = [
+            {
+                "Delete": {
+                    "TableName": REFRESH_TABLE.name,
+                    "Key": {"tokenHash": {"S": old_hash}},
+                    # Expiry was validated from the strongly consistent read
+                    # above; the condition guards against concurrent reuse.
+                    "ConditionExpression": (
+                        "userId = :user_id AND attribute_exists(expiresAt)"
+                    ),
+                    "ExpressionAttributeValues": {
+                        ":user_id": {"S": owner_id},
+                    },
+                }
+            }
+        ]
+        if claims:
+            transact_items.insert(
+                0,
                 {
                     "Put": {
                         "TableName": TOKEN_TABLE.name,
@@ -526,76 +761,100 @@ def logout(event, data):
                         },
                     }
                 },
-            ]
-        )
+            )
+        DDB_CLIENT.transact_write_items(TransactItems=transact_items)
         return response(200, {"message": "Logged out successfully"})
-
     except ClientError as exc:
         code = exc.response.get("Error", {}).get("Code")
-        if code in ("TransactionCanceledException", "ConditionalCheckFailedException"):
-            return response(
-                400,
-                {
-                    "error": (
-                        "Refresh token is invalid, expired, or belongs "
-                        "to another user"
-                    )
-                },
-            )
-        print(f"Logout failed: {type(exc).__name__}")
+        if code == "ConditionalCheckFailedException":
+            return response(400, {"error": "Refresh token is invalid, expired, or already used"})
+        if code == "TransactionCanceledException":
+            reasons = exc.response.get("CancellationReasons") or []
+            print("Logout transaction cancellation reasons:", reasons)
+            if any(r.get("Code") == "ConditionalCheckFailed" for r in reasons):
+                return response(
+                    400,
+                    {"error": "Refresh token is invalid, expired, or already used"},
+                )
+            traceback.print_exc()
+            return response(500, {"error": "Unable to complete logout"})
+        print("Logout DynamoDB error:", code, exc.response.get("Error", {}).get("Message"))
+        traceback.print_exc()
         return response(500, {"error": "Internal server error"})
     except Exception as exc:
         print(f"Logout failed: {type(exc).__name__}: {exc}")
+        traceback.print_exc()
         return response(500, {"error": "Internal server error"})
-
-
 def parse_event(event):
     request_context = event.get("requestContext") or {}
     http_context = request_context.get("http") or {}
-
     method = (
         http_context.get("method")
         or event.get("httpMethod")
         or ""
     ).upper()
-
     path = (
         event.get("rawPath")
         or event.get("path")
         or "/"
     ).split("?", 1)[0].rstrip("/").lower() or "/"
-
     body = event.get("body")
     if isinstance(body, str):
         try:
             if event.get("isBase64Encoded"):
-                body = base64.b64decode(body, validate=True).decode("utf-8")
+                body = base64.b64decode(
+                    body,
+                    validate=True,
+                ).decode("utf-8")
             body = json.loads(body)
-        except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+        except (
+            ValueError,
+            UnicodeDecodeError,
+            json.JSONDecodeError,
+        ):
             body = None
-
-    return method, path, body if isinstance(body, dict) else None
-
-
+    return (
+        method,
+        path,
+        body if isinstance(body, dict) else None,
+    )
+# ---------------------------------------------------------
+# LAMBDA ENTRY POINT
+# ---------------------------------------------------------
 def lambda_handler(event, context):
     method, path, data = parse_event(event)
-
     if method != "POST":
-        return response(405, {"error": "POST required"})
+        return response(
+            405,
+            {"error": "POST required"},
+        )
     if data is None:
-        return response(400, {"error": "A valid JSON object is required"})
-
-    # Only the six API routes configured in api-stack.yaml are accepted.
+        return response(
+            400,
+            {"error": "A valid JSON object is required"},
+        )
     routes = {
-        "/auth/doctors/register": lambda: register(data, "doctor"),
-        "/auth/doctors/login": lambda: login(data, "doctor"),
-        "/auth/patients/register": lambda: register(data, "patient"),
-        "/auth/patients/login": lambda: login(data, "patient"),
+        "/auth/doctors/register": lambda: register(
+            data, "doctor"
+        ),
+        "/auth/doctors/login": lambda: login(
+            data, "doctor"
+        ),
+        "/auth/patients/register": lambda: register(
+            data, "patient"
+        ),
+        "/auth/patients/login": lambda: login(
+            data, "patient"
+        ),
         "/auth/refresh": lambda: refresh(data),
-        "/auth/logout": lambda: logout(event, data),
+        "/auth/logout": lambda: logout(
+            event, data
+        ),
     }
-
     handler = routes.get(path)
     if handler is None:
-        return response(404, {"error": "Route not found"})
+        return response(
+            404,
+            {"error": "Route not found"},
+        )
     return handler()
