@@ -19,7 +19,7 @@ import os
 import re
 import uuid
 from datetime import date, datetime, time, timedelta, timezone
-from decimal import Decimal, InvalidOperation
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 import boto3
@@ -86,19 +86,28 @@ def json_default(value):
         return value.isoformat()
     if isinstance(value, Decimal):
         return float(value)
+    if isinstance(value, timedelta):
+        # MySQL TIME columns: always HH:MM:SS (str() would give "9:00:00").
+        total = int(value.total_seconds())
+        return f"{total // 3600:02d}:{total % 3600 // 60:02d}:{total % 60:02d}"
     return str(value)
 
 
 def response(status, payload):
+    headers = {
+        "Content-Type": "application/json",
+        "Cache-Control": "no-store",
+        "Access-Control-Allow-Origin": os.environ.get("CORS_ORIGIN", "*"),
+        "Access-Control-Allow-Headers": "Content-Type,Authorization",
+        "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
+    }
+    if status == 204:
+        # A 204 response must not carry a body.
+        del headers["Content-Type"]
+        return {"statusCode": 204, "headers": headers, "body": ""}
     return {
         "statusCode": status,
-        "headers": {
-            "Content-Type": "application/json",
-            "Cache-Control": "no-store",
-            "Access-Control-Allow-Origin": os.environ.get("CORS_ORIGIN", "*"),
-            "Access-Control-Allow-Headers": "Content-Type,Authorization",
-            "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
-        },
+        "headers": headers,
         "body": json.dumps(payload, default=json_default),
     }
 
@@ -132,6 +141,9 @@ def db_connection():
         user=credentials["user"],
         password=credentials["password"],
         database=DB_NAME,
+        # Encrypts traffic to RDS. The certificate is not verified because no
+        # CA bundle is packaged with the function (same as the auth Lambda).
+        ssl={"check_hostname": False},
         charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor,
         connect_timeout=5,
@@ -229,7 +241,7 @@ def validate_profile(body, partial):
             else:
                 result[field] = value
         elif field == "timezone":
-            zone = clean_text(value, field, max_length, required=not partial)
+            zone = clean_text(value, field, max_length, required=True)
             if zone:
                 try:
                     ZoneInfo(zone)
@@ -237,9 +249,9 @@ def validate_profile(body, partial):
                     raise APIError(400, "timezone must be a valid IANA timezone")
             result[field] = zone
         else:
-            result[field] = clean_text(
-                value, field, max_length, required=(required and not partial)
-            )
+            # A field that is present must satisfy its own required flag,
+            # even on a partial update (sending "" must not blank a NOT NULL column).
+            result[field] = clean_text(value, field, max_length, required=required)
     return result
 
 
@@ -371,6 +383,30 @@ def create_photo_upload(doctor_id, body):
     }
 
 
+REGULAR_DURATIONS = (15, 30, 60)
+
+
+def check_consultation_rules(name, duration, capacity):
+    """Mirror of the chk_consultation_capacity CHECK constraint in the schema.
+
+    Checked here so a bad combination returns a clear 400 instead of failing
+    inside MySQL.
+    """
+    if name == "Health Camp Session":
+        if duration != 60:
+            raise APIError(400, "Health Camp Session duration must be 60 minutes")
+        if not 2 <= capacity <= 10:
+            raise APIError(400, "Health Camp Session capacity must be between 2 and 10")
+    else:
+        if duration not in REGULAR_DURATIONS:
+            raise APIError(
+                400,
+                "Quick, Standard, and Detailed Consult duration must be 15, 30, or 60 minutes",
+            )
+        if capacity != 1:
+            raise APIError(400, "Quick, Standard, and Detailed Consult capacity must be 1")
+
+
 def validate_consultation(body, partial=False):
     allowed = {"consultation_name", "duration_minutes", "fee", "capacity", "description"}
     unknown = set(body) - allowed
@@ -400,7 +436,10 @@ def validate_consultation(body, partial=False):
             fee = Decimal(str(body["fee"]))
         except (InvalidOperation, ValueError):
             raise APIError(400, "fee must be a valid number")
-        if not fee.is_finite() or fee < 0 or fee > Decimal("99999999.99"):
+        if not fee.is_finite():
+            raise APIError(400, "fee must be a valid number")
+        fee = fee.quantize(Decimal("0.01"), rounding=ROUND_HALF_UP)
+        if fee < 0 or fee > Decimal("99999999.99"):
             raise APIError(400, "fee must be between 0 and 99999999.99")
         result["fee"] = fee
     elif not partial:
@@ -419,14 +458,12 @@ def validate_consultation(body, partial=False):
     elif not partial:
         result["description"] = None
 
-    name = result.get("consultation_name")
-    capacity = result.get("capacity")
-    if name and capacity is not None:
-        if name == "Health Camp Session":
-            if not 2 <= capacity <= 10:
-                raise APIError(400, "Health Camp Session capacity must be between 2 and 10")
-        elif capacity != 1:
-            raise APIError(400, "Quick, Standard, and Detailed Consult capacity must be 1")
+    if not partial:
+        # Every rule input is present on create. Partial updates are checked
+        # against the stored row in update_consultation().
+        check_consultation_rules(
+            result["consultation_name"], result["duration_minutes"], result["capacity"]
+        )
     return result
 
 
@@ -466,17 +503,28 @@ def update_consultation(doctor_id, consultation_id, body):
     sets = ", ".join(f"{k}=%s" for k in values)
     with db_connection() as conn:
         with conn.cursor() as cur:
+            # Read the stored row so the name/duration/capacity rules are
+            # checked against the final combination, not just the changed field.
+            cur.execute(
+                """SELECT consultation_name, duration_minutes, capacity
+                   FROM consultation_types
+                   WHERE consultation_type_id=%s AND doctor_id=%s
+                   FOR UPDATE""",
+                (consultation_id, doctor_id),
+            )
+            current = cur.fetchone()
+            if not current:
+                raise APIError(404, "Consultation type not found")
+            merged = {**current, **values}
+            check_consultation_rules(
+                merged["consultation_name"],
+                int(merged["duration_minutes"]),
+                int(merged["capacity"]),
+            )
             cur.execute(
                 f"UPDATE consultation_types SET {sets} WHERE consultation_type_id=%s AND doctor_id=%s",
                 list(values.values()) + [consultation_id, doctor_id],
             )
-            if cur.rowcount == 0:
-                cur.execute(
-                    "SELECT consultation_type_id FROM consultation_types WHERE consultation_type_id=%s AND doctor_id=%s",
-                    (consultation_id, doctor_id),
-                )
-                if not cur.fetchone():
-                    raise APIError(404, "Consultation type not found")
         conn.commit()
     return {"message": "Consultation type updated"}
 
@@ -496,6 +544,13 @@ def delete_consultation(doctor_id, consultation_id):
                 )
                 if not cur.fetchone():
                     raise APIError(404, "Consultation type not found")
+            # A deactivated consultation type must stop appearing in the
+            # doctor's weekly availability.
+            cur.execute(
+                """UPDATE availability_patterns SET is_active=0
+                   WHERE consultation_type_id=%s AND doctor_id=%s AND is_active=1""",
+                (consultation_id, doctor_id),
+            )
         conn.commit()
     return {"message": "Consultation type deactivated"}
 
@@ -561,7 +616,7 @@ def replace_availability(doctor_id, body):
             if effective_until and effective_until < effective_from:
                 raise ValueError()
             consultation_id = str(uuid.UUID(p["consultation_type_id"]))
-        except (KeyError, ValueError, TypeError):
+        except (KeyError, ValueError, TypeError, AttributeError):
             raise APIError(400, f"patterns[{index}] has invalid or missing values")
         validated.append((str(uuid.uuid4()), doctor_id, consultation_id, day,
                           start, end, effective_from, effective_until))
@@ -760,6 +815,21 @@ def lambda_handler(event, context):
         if exc.details:
             payload["details"] = exc.details
         return response(exc.status, payload)
+    except pymysql.MySQLError as exc:
+        code = exc.args[0] if exc.args and isinstance(exc.args[0], int) else None
+        if code == 1062:
+            return response(409, {"error": "This record already exists"})
+        if code in (3819, 4025):
+            return response(400, {"error": "The values violate a database rule"})
+        if code in (1048, 1264, 1265, 1366, 1406, 1452):
+            return response(
+                400,
+                {"error": "A value is missing, out of range, or refers to a record that does not exist"},
+            )
+        logger.exception("Database error %s", code)
+        if code in (2003, 2006, 2013):
+            return response(503, {"error": "Database temporarily unavailable"})
+        return response(500, {"error": "Internal server error"})
     except Exception:
         logger.exception("Unhandled MediSlot application error")
         return response(500, {"error": "Internal server error"})

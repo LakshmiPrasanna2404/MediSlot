@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  MediSlot authentication stack with patient registration,
+  MediSlot authentication stack with doctor and patient registration,
   login, JWT refresh, logout, and JWT authorization.
 
 Parameters:
@@ -64,10 +64,12 @@ Parameters:
 
   AuthMemorySize:
     Type: Number
-    Default: 256
+    Default: 1024
     MinValue: 128
     MaxValue: 10240
-    Description: Authentication Lambda memory in MB
+    Description: >-
+      Authentication Lambda memory in MB. Password hashing (bcrypt) is
+      CPU-bound and Lambda CPU scales with memory, so 1024 keeps login fast.
 
   AuthorizerTimeout:
     Type: Number
@@ -150,7 +152,7 @@ Resources:
     Properties:
       FunctionName: !Sub medislot-${Environment}-auth
       Description: >-
-        Register patients, authenticate credentials,
+        Register doctors and patients, authenticate credentials,
         refresh JWTs, and revoke sessions on logout.
       Runtime: !Ref PythonRuntime
       Handler: !Ref AuthHandler
@@ -159,6 +161,7 @@ Resources:
           Fn::Sub: medislot-${Environment}-auth-role-arn
       Timeout: !Ref AuthTimeout
       MemorySize: !Ref AuthMemorySize
+      # CI builds the package on x86_64 runners; keep this in sync with it.
       Architectures:
         - x86_64
       Code:

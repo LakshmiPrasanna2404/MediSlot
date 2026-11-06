@@ -1,4 +1,3 @@
-
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   MediSlot application stack. Hosts the doctor and patient application API,
@@ -57,6 +56,47 @@ Parameters:
       - 30
       - 60
       - 90
+
+  CorsAllowedOrigins:
+    Type: CommaDelimitedList
+    Default: ''
+    Description: >-
+      Comma-separated browser origins allowed to call the API, for example
+      https://app.example.com. Leave empty if no browser calls the API directly.
+      When set, API Gateway answers CORS preflight (OPTIONS) requests itself,
+      before the JWT authorizer runs.
+
+  ThrottleRateLimit:
+    Type: Number
+    Default: 100
+    MinValue: 1
+    Description: Steady-state requests per second allowed on every route.
+
+  ThrottleBurstLimit:
+    Type: Number
+    Default: 200
+    MinValue: 1
+    Description: Burst requests allowed on every route.
+
+  AuthThrottleRateLimit:
+    Type: Number
+    Default: 20
+    MinValue: 1
+    Description: >-
+      Requests per second allowed on register and login. These are public and
+      run bcrypt, so they are capped lower to limit brute-force and cost abuse.
+
+  AuthThrottleBurstLimit:
+    Type: Number
+    Default: 40
+    MinValue: 1
+    Description: Burst requests allowed on register and login.
+
+Conditions:
+  HasCorsOrigins: !Not
+    - !Equals
+      - !Join ['', !Ref CorsAllowedOrigins]
+      - ''
 
 Resources:
   # ---------------------------------------------------------
@@ -131,9 +171,6 @@ Resources:
           IDEMPOTENCY_TABLE: !Sub medislot-${Environment}-idempotency
           DISPATCH_LOG_TABLE: !Sub medislot-${Environment}-dispatch-log
 
-          JWT_SECRET_PARAMETER: !Sub /medislot/${Environment}/auth/jwt-secret
-          TOKEN_REVOCATIONS_TABLE: !Sub medislot-${Environment}-token-revocations
-
           DOCTOR_FILES_BUCKET:
             Fn::ImportValue:
               Fn::Sub: medislot-${Environment}-doctor-files-bucket-name
@@ -153,6 +190,21 @@ Resources:
       Name: !Sub medislot-${Environment}-app-api
       Description: MediSlot doctor and patient application API
       ProtocolType: HTTP
+      CorsConfiguration: !If
+        - HasCorsOrigins
+        - AllowOrigins: !Ref CorsAllowedOrigins
+          AllowMethods:
+            - GET
+            - POST
+            - PUT
+            - PATCH
+            - DELETE
+            - OPTIONS
+          AllowHeaders:
+            - Authorization
+            - Content-Type
+          MaxAge: 3600
+        - !Ref AWS::NoValue
       Tags:
         Project: MediSlot
         Environment: !Ref Environment
@@ -252,8 +304,9 @@ Resources:
       ApiId: !Ref AppHttpApi
       RouteKey: 'POST /auth/logout'
       Target: !Sub integrations/${AuthApiIntegration}
-      # Logout accepts the refresh token as the Bearer token.
-      # Do not attach the access-token authorizer to this route.
+      # Logout is authenticated by the refresh token itself, sent in the JSON
+      # body or as the Bearer value. An access token is optional. Do not attach
+      # the access-token authorizer to this route.
       AuthorizationType: NONE
 
   # ---------------------------------------------------------
@@ -311,10 +364,32 @@ Resources:
   # ---------------------------------------------------------
   AppApiStage:
     Type: AWS::ApiGatewayV2::Stage
+    # Route settings can only be applied once their routes exist.
+    DependsOn:
+      - AuthDoctorRegisterRoute
+      - AuthDoctorLoginRoute
+      - AuthPatientRegisterRoute
+      - AuthPatientLoginRoute
     Properties:
       ApiId: !Ref AppHttpApi
       StageName: '$default'
       AutoDeploy: true
+      DefaultRouteSettings:
+        ThrottlingRateLimit: !Ref ThrottleRateLimit
+        ThrottlingBurstLimit: !Ref ThrottleBurstLimit
+      RouteSettings:
+        'POST /auth/doctors/register':
+          ThrottlingRateLimit: !Ref AuthThrottleRateLimit
+          ThrottlingBurstLimit: !Ref AuthThrottleBurstLimit
+        'POST /auth/doctors/login':
+          ThrottlingRateLimit: !Ref AuthThrottleRateLimit
+          ThrottlingBurstLimit: !Ref AuthThrottleBurstLimit
+        'POST /auth/patients/register':
+          ThrottlingRateLimit: !Ref AuthThrottleRateLimit
+          ThrottlingBurstLimit: !Ref AuthThrottleBurstLimit
+        'POST /auth/patients/login':
+          ThrottlingRateLimit: !Ref AuthThrottleRateLimit
+          ThrottlingBurstLimit: !Ref AuthThrottleBurstLimit
       Tags:
         Project: MediSlot
         Environment: !Ref Environment
