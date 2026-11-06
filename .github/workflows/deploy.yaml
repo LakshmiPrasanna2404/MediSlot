@@ -148,13 +148,46 @@ jobs:
           role-to-assume: ${{ env.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
 
+      - name: Resolve regional AWS-managed prefix lists
+        id: prefix-lists
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          S3_PREFIX_LIST_ID=$(aws ec2 describe-managed-prefix-lists \
+            --filters "Name=prefix-list-name,Values=com.amazonaws.${AWS_REGION}.s3" \
+            --region "$AWS_REGION" \
+            --query 'PrefixLists[0].PrefixListId' \
+            --output text)
+
+          DYNAMODB_PREFIX_LIST_ID=$(aws ec2 describe-managed-prefix-lists \
+            --filters "Name=prefix-list-name,Values=com.amazonaws.${AWS_REGION}.dynamodb" \
+            --region "$AWS_REGION" \
+            --query 'PrefixLists[0].PrefixListId' \
+            --output text)
+
+          [[ "$S3_PREFIX_LIST_ID" == pl-* ]] || {
+            echo "::error::Could not find the regional S3 managed prefix list"
+            exit 1
+          }
+          [[ "$DYNAMODB_PREFIX_LIST_ID" == pl-* ]] || {
+            echo "::error::Could not find the regional DynamoDB managed prefix list"
+            exit 1
+          }
+
+          echo "s3=$S3_PREFIX_LIST_ID" >> "$GITHUB_OUTPUT"
+          echo "dynamodb=$DYNAMODB_PREFIX_LIST_ID" >> "$GITHUB_OUTPUT"
+
       - name: Deploy Network
         run: |
           set -euo pipefail
           aws cloudformation deploy \
             --stack-name "medislot-${ENVIRONMENT}-network" \
             --template-file infrastructure/network-stack.yaml \
-            --parameter-overrides Environment="${ENVIRONMENT}" \
+            --parameter-overrides \
+              Environment="${ENVIRONMENT}" \
+              S3PrefixListId="${{ steps.prefix-lists.outputs.s3 }}" \
+              DynamoDBPrefixListId="${{ steps.prefix-lists.outputs.dynamodb }}" \
             --no-fail-on-empty-changeset \
             --region "$AWS_REGION"
 
