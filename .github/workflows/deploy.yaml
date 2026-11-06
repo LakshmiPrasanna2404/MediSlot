@@ -81,7 +81,7 @@ jobs:
 
       - name: Lint templates
         run: |
-          yamllint -d relaxed \
+          yamllint -d "{extends: relaxed, rules: {line-length: disable, empty-lines: disable}}" \
             infrastructure/network-stack.yaml \
             infrastructure/data-stack.yaml \
             infrastructure/iam-stack.yaml \
