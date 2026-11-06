@@ -82,7 +82,7 @@ Resources:
       StorageType: gp3
 
       # RDS storage encryption is disabled.
-      StorageEncrypted: false
+      StorageEncrypted: true
 
       PubliclyAccessible: false
       MultiAZ: !If [IsProd, true, false]

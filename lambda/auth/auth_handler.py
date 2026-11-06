@@ -326,7 +326,6 @@ def create_refresh_token(user_id, role):
         Item={
             "tokenHash": token_hash(raw_token),
             "userId": str(user_id),
-            "role": role,
             "createdAt": now,
             "expiresAt": expires,
         },
@@ -348,7 +347,9 @@ def rotate_refresh_token(old_token, user, role):
         raise ValueError("Refresh token does not exist")
     if str(old_item.get("userId")) != user_id:
         raise ValueError("Refresh token user mismatch")
-    if old_item.get("role") != role:
+    # The final refresh-tokens table stores tokenHash, userId, createdAt,
+    # and expiresAt only. The authoritative role comes from the users row.
+    if user.get("role") != role:
         raise ValueError("Refresh token role mismatch")
     if expiry_timestamp(old_item.get("expiresAt")) <= now:
         raise ValueError("Refresh token has expired")
@@ -368,7 +369,6 @@ def rotate_refresh_token(old_token, user, role):
                     "Item": {
                         "tokenHash": {"S": new_hash},
                         "userId": {"S": user_id},
-                        "role": {"S": role},
                         "createdAt": {"N": str(now)},
                         "expiresAt": {"N": str(expires)},
                     },
@@ -398,6 +398,7 @@ def rotate_refresh_token(old_token, user, role):
     }
 
 def register(data, role):
+    """Create exactly one patient OR doctor account for an email address."""
     name = data.get("full_name")
     email = data.get("email")
     password = data.get("password")
@@ -431,93 +432,58 @@ def register(data, role):
             conn.begin()
             try:
                 with conn.cursor() as cur:
+                    # UNIQUE(email) in MySQL is the final concurrency guard.
+                    # This lookup provides a clear response for normal duplicates.
                     cur.execute(
-                        """
-                        SELECT user_id, full_name, email, password_hash, role, is_active
-                        FROM users
-                        WHERE email = %s
-                        LIMIT 1
-                        FOR UPDATE
-                        """,
+                        "SELECT user_id FROM users WHERE email = %s LIMIT 1",
                         (email,),
                     )
-                    existing = cur.fetchone()
-
-                    if existing:
-                        if not verify_password(password, existing["password_hash"]):
-                            conn.rollback()
-                            return response(
-                                409,
-                                {"error": "This email already has an account. Use the existing account password."},
-                            )
-
-                        existing_roles = [
-                            item.strip()
-                            for item in str(existing["role"]).split(",")
-                            if item.strip()
-                        ]
-                        if role in existing_roles:
-                            conn.rollback()
-                            return response(
-                                409,
-                                {"error": f"This account is already registered as a {role}."},
-                            )
-
-                        cur.execute(
-                            """
-                            UPDATE users
-                            SET role = CONCAT_WS(',', role, %s)
-                            WHERE user_id = %s
-                            """,
-                            (role, existing["user_id"]),
+                    if cur.fetchone():
+                        conn.rollback()
+                        return response(
+                            409,
+                            {"error": "This email is already registered. Each email can have only one account."},
                         )
-                        user_id = str(existing["user_id"])
-                        full_name = existing["full_name"]
-                        assigned_roles = existing_roles + [role]
-                        message = f"{role.capitalize()} role added to existing account"
-                        status = 200
-                    else:
-                        user_id = str(uuid.uuid4())
-                        cur.execute(
-                            """
-                            INSERT INTO users
-                                (user_id, full_name, email, password_hash, role, is_active)
-                            VALUES (%s, %s, %s, %s, %s, 1)
-                            """,
-                            (
-                                user_id,
-                                name,
-                                email,
-                                hash_password(password),
-                                role,
-                            ),
-                        )
-                        full_name = name
-                        assigned_roles = [role]
-                        message = "Registration successful"
-                        status = 201
+
+                    user_id = str(uuid.uuid4())
+                    cur.execute(
+                        """
+                        INSERT INTO users
+                            (user_id, full_name, email, password_hash, role, is_active)
+                        VALUES (%s, %s, %s, %s, %s, 1)
+                        """,
+                        (
+                            user_id,
+                            name,
+                            email,
+                            hash_password(password),
+                            role,
+                        ),
+                    )
                 conn.commit()
             except Exception:
                 conn.rollback()
                 raise
 
         return response(
-            status,
+            201,
             {
-                "message": message,
+                "message": "Registration successful",
                 "user": {
                     "user_id": user_id,
-                    "full_name": full_name,
+                    "full_name": name,
                     "email": email,
                     "role": role,
-                    "roles": assigned_roles,
+                    "roles": [role],
                 },
             },
         )
-    except pymysql.err.IntegrityError:
+    except pymysql.err.IntegrityError as exc:
+        # Handles simultaneous registrations that race past the lookup.
+        print(f"Registration uniqueness conflict: {exc}")
         return response(
             409,
-            {"error": "Account registration conflicted with an existing account. Please retry."},
+            {"error": "This email is already registered. Each email can have only one account."},
         )
     except Exception as exc:
         print(f"Registration failed: {type(exc).__name__}: {exc}")
@@ -542,21 +508,17 @@ def login(data, role):
                     """
                     SELECT user_id, full_name, email, password_hash, role, is_active
                     FROM users
-                    WHERE email = %s
+                    WHERE email = %s AND role = %s
                     LIMIT 1
                     """,
-                    (email.strip().lower(),),
+                    (email.strip().lower(), role),
                 )
                 user = cur.fetchone()
 
-        user_roles = (
-            [item.strip() for item in str(user["role"]).split(",") if item.strip()]
-            if user else []
-        )
         if (
             not user
             or not user["is_active"]
-            or role not in user_roles
+            or user["role"] != role
             or not verify_password(password, user["password_hash"])
         ):
             return response(401, {"error": "Invalid email or password"})
@@ -579,7 +541,7 @@ def login(data, role):
                     "full_name": user["full_name"],
                     "email": user["email"],
                     "role": role,
-                    "roles": user_roles,
+                    "roles": [role],
                 },
             },
         )
@@ -622,25 +584,10 @@ def refresh(data):
         ):
             return response(401, {"error": "Invalid refresh token"})
 
-        user_roles = [
-            value.strip()
-            for value in str(user["role"]).split(",")
-            if value.strip()
-        ]
-        selected_role = item.get("role")
-
-        # Old refresh records did not store a session role. They are safe to
-        # refresh only when the account has exactly one role; otherwise the
-        # user must log in again and select doctor or patient explicitly.
-        if not selected_role:
-            if len(user_roles) != 1:
-                return response(
-                    401,
-                    {"error": "Please log in again and select your account role"},
-                )
-            selected_role = user_roles[0]
-
-        if selected_role not in ("doctor", "patient") or selected_role not in user_roles:
+        # The final users schema has exactly one ENUM role per account.
+        # DynamoDB refresh-token records intentionally do not duplicate it.
+        selected_role = user["role"]
+        if selected_role not in ("doctor", "patient"):
             return response(401, {"error": "Refresh token role is no longer valid"})
 
         return response(

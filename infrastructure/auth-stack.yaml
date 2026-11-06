@@ -1,3 +1,4 @@
+
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   MediSlot authentication stack with doctor and patient registration,
@@ -95,14 +96,20 @@ Resources:
       Type: String
       Value: '900'
       Description: Authentication access token lifetime in seconds
+      Tags:
+        Project: MediSlot
+        Environment: !Ref Environment
 
   AuthRefreshTokenSeconds:
     Type: AWS::SSM::Parameter
     Properties:
       Name: !Sub /medislot/${Environment}/auth/refresh-token-seconds
       Type: String
-      Value: '2592000'
-      Description: Authentication refresh token lifetime in seconds
+      Value: '604800'
+      Description: Authentication refresh token lifetime in seconds (7 days)
+      Tags:
+        Project: MediSlot
+        Environment: !Ref Environment
 
   AuthBcryptRounds:
     Type: AWS::SSM::Parameter
@@ -111,6 +118,9 @@ Resources:
       Type: String
       Value: '12'
       Description: Password hashing bcrypt cost factor
+      Tags:
+        Project: MediSlot
+        Environment: !Ref Environment
 
   AuthPasswordMinLength:
     Type: AWS::SSM::Parameter
@@ -119,6 +129,9 @@ Resources:
       Type: String
       Value: '8'
       Description: Minimum password length
+      Tags:
+        Project: MediSlot
+        Environment: !Ref Environment
 
   # Authentication Lambda logs
   AuthFunctionLogGroup:
