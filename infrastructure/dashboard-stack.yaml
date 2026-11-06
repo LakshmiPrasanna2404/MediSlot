@@ -1,0 +1,246 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  MediSlot operations dashboard. One small EC2 instance in the public subnet runs
+  a read-only Flask app that shows CloudWatch data. Access is limited to one admin
+  CIDR on port 80. The app is pulled from S3 on every boot, so a new package key
+  restarts the instance and deploys the new code.
+
+Parameters:
+  Environment:
+    Type: String
+    Description: Deployment environment.
+    AllowedValues:
+      - dev
+      - prod
+
+  AdminCidr:
+    Type: String
+    Description: >-
+      Public IPv4 CIDR allowed to open the dashboard, for example 203.0.113.7/32.
+      The page is served over plain HTTP, so keep this as narrow as possible.
+    AllowedPattern: '^(?:[0-9]{1,3}\.){3}[0-9]{1,3}/(?:1[6-9]|2[0-9]|3[0-2])$'
+    ConstraintDescription: Must be an IPv4 CIDR with a prefix of /16 to /32.
+
+  DashboardCodeS3Bucket:
+    Type: String
+    Description: S3 bucket holding the dashboard package.
+
+  DashboardCodeS3Key:
+    Type: String
+    Description: S3 key of the dashboard package zip.
+
+  InstanceType:
+    Type: String
+    Default: t3.micro
+    AllowedValues:
+      - t3.micro
+      - t3.small
+      - t2.micro
+    Description: EC2 instance type.
+
+  LatestAmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+    Description: Amazon Linux 2023 AMI (public SSM parameter).
+
+Rules:
+  AdminCidrIsNotOpenToEveryone:
+    Assertions:
+      - Assert: !Not
+          - !Equals
+            - !Ref AdminCidr
+            - 0.0.0.0/0
+        AssertDescription: AdminCidr must not be 0.0.0.0/0. The dashboard must not be open to the internet.
+
+Resources:
+  DashboardSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Dashboard web access from the admin CIDR only. No SSH.
+      VpcId:
+        Fn::ImportValue:
+          Fn::Sub: medislot-${Environment}-vpc-id
+      SecurityGroupIngress:
+        - Description: Dashboard HTTP from the admin CIDR
+          IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: !Ref AdminCidr
+      SecurityGroupEgress:
+        - Description: HTTPS to AWS APIs and package repositories
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-${Environment}-dashboard-sg
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  DashboardInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      ImageId: !Ref LatestAmiId
+      InstanceType: !Ref InstanceType
+      SubnetId:
+        Fn::ImportValue:
+          Fn::Sub: medislot-${Environment}-public-subnet-id
+      SecurityGroupIds:
+        - !Ref DashboardSecurityGroup
+      IamInstanceProfile:
+        Fn::ImportValue:
+          Fn::Sub: medislot-${Environment}-dashboard-profile-name
+      # Standard credits: a busy burst cannot turn into a surprise unlimited-mode charge.
+      CreditSpecification:
+        CPUCredits: standard
+      MetadataOptions:
+        HttpTokens: required
+        HttpEndpoint: enabled
+        HttpPutResponseHopLimit: 1
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            VolumeSize: 8
+            VolumeType: gp3
+            Encrypted: true
+            DeleteOnTermination: true
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-${Environment}-dashboard
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+      # cloud-init runs the script below on EVERY boot (scripts-user: always).
+      # A new DashboardCodeS3Key changes this text, CloudFormation stops and starts
+      # the instance, and the script pulls the new package on the way back up.
+      # The instance keeps no state, so replacing it is always safe.
+      UserData:
+        Fn::Base64:
+          Fn::Sub:
+            - |
+              Content-Type: multipart/mixed; boundary="==MEDISLOT=="
+              MIME-Version: 1.0
+
+              --==MEDISLOT==
+              Content-Type: text/cloud-config; charset="us-ascii"
+
+              #cloud-config
+              cloud_final_modules:
+                - [scripts-user, always]
+
+              --==MEDISLOT==
+              Content-Type: text/x-shellscript; charset="us-ascii"
+
+              #!/bin/bash
+              set -euo pipefail
+              exec > >(tee -a /var/log/medislot-dashboard-bootstrap.log /dev/console) 2>&1
+              echo "medislot dashboard bootstrap start: $(date -u +%FT%TZ)"
+
+              dnf install -y python3.12 python3.12-pip unzip
+
+              id medislot >/dev/null 2>&1 || useradd --system --home-dir /opt/medislot --shell /sbin/nologin medislot
+              install -d -o medislot -g medislot /opt/medislot
+
+              # Not secrets: names and ids only. Credentials stay in SSM.
+              cat > /etc/medislot-dashboard.env <<'ENVEOF'
+              ENVIRONMENT=${Environment}
+              AWS_REGION=${AWS::Region}
+              AWS_DEFAULT_REGION=${AWS::Region}
+              API_ID=${ApiId}
+              SLOTS_TABLE=${SlotsTable}
+              SEATS_TABLE=${SeatsTable}
+              DB_INSTANCE_ID=${DbInstanceId}
+              ENVEOF
+              chmod 644 /etc/medislot-dashboard.env
+
+              WORK=$(mktemp -d)
+              aws s3 cp "s3://${DashboardCodeS3Bucket}/${DashboardCodeS3Key}" "$WORK/dashboard.zip" --region ${AWS::Region}
+              rm -rf /opt/medislot/app.new
+              mkdir /opt/medislot/app.new
+              unzip -q "$WORK/dashboard.zip" -d /opt/medislot/app.new
+              test -f /opt/medislot/app.new/dashboard/wsgi.py
+
+              test -d /opt/medislot/venv || python3.12 -m venv /opt/medislot/venv
+              /opt/medislot/venv/bin/pip install --quiet --disable-pip-version-check -r /opt/medislot/app.new/dashboard/requirements.txt
+
+              rm -rf /opt/medislot/app
+              mv /opt/medislot/app.new /opt/medislot/app
+              chown -R medislot:medislot /opt/medislot
+
+              cat > /etc/systemd/system/medislot-dashboard.service <<'UNITEOF'
+              [Unit]
+              Description=MediSlot operations dashboard
+              After=network-online.target
+              Wants=network-online.target
+
+              [Service]
+              User=medislot
+              Group=medislot
+              WorkingDirectory=/opt/medislot/app
+              EnvironmentFile=/etc/medislot-dashboard.env
+              ExecStart=/opt/medislot/venv/bin/gunicorn --bind 0.0.0.0:80 --workers 1 --threads 4 --timeout 30 --access-logfile - dashboard.wsgi:app
+              Restart=always
+              RestartSec=5
+              AmbientCapabilities=CAP_NET_BIND_SERVICE
+              CapabilityBoundingSet=CAP_NET_BIND_SERVICE
+              NoNewPrivileges=true
+              PrivateTmp=true
+              ProtectHome=true
+
+              [Install]
+              WantedBy=multi-user.target
+              UNITEOF
+
+              systemctl daemon-reload
+              systemctl enable medislot-dashboard
+              systemctl restart medislot-dashboard
+              echo "medislot dashboard bootstrap done: $(date -u +%FT%TZ)"
+
+              --==MEDISLOT==--
+            - ApiId:
+                Fn::ImportValue:
+                  Fn::Sub: medislot-${Environment}-api-id
+              SlotsTable:
+                Fn::ImportValue:
+                  Fn::Sub: medislot-${Environment}-slots-table-name
+              SeatsTable:
+                Fn::ImportValue:
+                  Fn::Sub: medislot-${Environment}-seats-table-name
+              DbInstanceId:
+                Fn::ImportValue:
+                  Fn::Sub: medislot-${Environment}-db-instance-id
+
+  DashboardElasticIp:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-${Environment}-dashboard-ip
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  DashboardElasticIpAssociation:
+    Type: AWS::EC2::EIPAssociation
+    Properties:
+      AllocationId: !GetAtt DashboardElasticIp.AllocationId
+      InstanceId: !Ref DashboardInstance
+
+Outputs:
+  DashboardUrl:
+    Description: Dashboard address. Reachable only from AdminCidr.
+    Value: !Sub http://${DashboardElasticIp}
+    Export:
+      Name: !Sub medislot-${Environment}-dashboard-url
+
+  DashboardInstanceId:
+    Description: Dashboard EC2 instance id.
+    Value: !Ref DashboardInstance
+    Export:
+      Name: !Sub medislot-${Environment}-dashboard-instance-id

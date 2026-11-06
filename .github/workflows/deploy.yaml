@@ -68,11 +68,16 @@ jobs:
             infrastructure/auth-stack.yaml \
             infrastructure/api-stack.yaml \
             infrastructure/app-stack.yaml \
+            infrastructure/monitoring-stack.yaml \
+            infrastructure/dashboard-stack.yaml \
             lambda/auth/auth_handler.py \
             lambda/auth/requirements.txt \
             lambda/authorizer/authorizer_handler.py \
             lambda/app/app_handler.py \
-            lambda/app/requirements.txt
+            lambda/app/requirements.txt \
+            dashboard/wsgi.py \
+            dashboard/app.py \
+            dashboard/requirements.txt
           do
             test -s "$file" || {
               echo "::error::Missing file: $file"
@@ -88,7 +93,9 @@ jobs:
             infrastructure/iam-stack.yaml \
             infrastructure/auth-stack.yaml \
             infrastructure/api-stack.yaml \
-            infrastructure/app-stack.yaml
+            infrastructure/app-stack.yaml \
+            infrastructure/monitoring-stack.yaml \
+            infrastructure/dashboard-stack.yaml
 
           cfn-lint --non-zero-exit-code error \
             infrastructure/network-stack.yaml \
@@ -96,7 +103,9 @@ jobs:
             infrastructure/iam-stack.yaml \
             infrastructure/auth-stack.yaml \
             infrastructure/api-stack.yaml \
-            infrastructure/app-stack.yaml
+            infrastructure/app-stack.yaml \
+            infrastructure/monitoring-stack.yaml \
+            infrastructure/dashboard-stack.yaml
 
       - uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -117,7 +126,9 @@ jobs:
             infrastructure/iam-stack.yaml \
             infrastructure/auth-stack.yaml \
             infrastructure/api-stack.yaml \
-            infrastructure/app-stack.yaml
+            infrastructure/app-stack.yaml \
+            infrastructure/monitoring-stack.yaml \
+            infrastructure/dashboard-stack.yaml
           do
             echo "Validating $template"
             aws cloudformation validate-template \
@@ -614,3 +625,203 @@ jobs:
           }
 
           echo "MediSlot App API URL: $API_URL"
+
+  # 8. MONITORING: ALARM TOPIC AND ALARMS
+  deploy-monitoring:
+    name: Deploy Monitoring and Alarms
+    runs-on: ubuntu-latest
+    needs: deploy-app
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Read CloudFormation execution role
+        id: deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EXECUTION_ROLE=$(aws cloudformation describe-stacks \
+            --stack-name "medislot-${ENVIRONMENT}-iam" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='CloudFormationExecutionRoleArn'].OutputValue | [0]" \
+            --output text)
+
+          [[ -n "$EXECUTION_ROLE" && "$EXECUTION_ROLE" != "None" ]] || {
+            echo "::error::CloudFormationExecutionRole output missing"
+            exit 1
+          }
+
+          echo "execution_role=$EXECUTION_ROLE" >> "$GITHUB_OUTPUT"
+
+      - name: Deploy monitoring
+        shell: bash
+        env:
+          # Optional repository variable. Empty means the topic has no subscriber.
+          ALARM_EMAIL: ${{ vars.ALARM_EMAIL }}
+        run: |
+          set -euo pipefail
+          aws cloudformation deploy \
+            --stack-name "medislot-${ENVIRONMENT}-monitoring" \
+            --template-file infrastructure/monitoring-stack.yaml \
+            --role-arn "${{ steps.deployment.outputs.execution_role }}" \
+            --parameter-overrides \
+              Environment="${ENVIRONMENT}" \
+              AlarmEmail="${ALARM_EMAIL:-}" \
+            --no-fail-on-empty-changeset \
+            --region "$AWS_REGION"
+
+      - name: Verify monitoring stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "medislot-${ENVIRONMENT}-monitoring" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].StackStatus' --output text)
+
+          echo "Monitoring stack status: $STATUS"
+          [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
+
+  # 9. OPERATIONS DASHBOARD (EC2)
+  deploy-dashboard:
+    name: Deploy Operations Dashboard
+    runs-on: ubuntu-latest
+    needs: deploy-monitoring
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Check dashboard configuration
+        shell: bash
+        env:
+          DASHBOARD_ADMIN_CIDR: ${{ vars.DASHBOARD_ADMIN_CIDR }}
+        run: |
+          set -euo pipefail
+
+          [[ -n "${DASHBOARD_ADMIN_CIDR:-}" ]] || {
+            echo "::error::Repository variable DASHBOARD_ADMIN_CIDR is missing. Set it to your public IP, for example 203.0.113.7/32."
+            exit 1
+          }
+
+          # The dashboard must never be open to everyone.
+          [[ "$DASHBOARD_ADMIN_CIDR" != "0.0.0.0/0" ]] || {
+            echo "::error::DASHBOARD_ADMIN_CIDR must not be 0.0.0.0/0"
+            exit 1
+          }
+
+          # The login needs these three SecureStrings before the page can work.
+          for name in username password-hash session-secret; do
+            aws ssm get-parameter \
+              --name "/medislot/${ENVIRONMENT}/dashboard/${name}" \
+              --region "$AWS_REGION" >/dev/null 2>&1 || {
+              echo "::error::SSM parameter /medislot/${ENVIRONMENT}/dashboard/${name} is missing. See dashboard/README.md."
+              exit 1
+            }
+          done
+
+      - name: Read deployment configuration
+        id: deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BUCKET=$(aws cloudformation describe-stacks \
+            --stack-name "medislot-${ENVIRONMENT}-data" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='ArtifactBucketName'].OutputValue | [0]" \
+            --output text)
+
+          EXECUTION_ROLE=$(aws cloudformation describe-stacks \
+            --stack-name "medislot-${ENVIRONMENT}-iam" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='CloudFormationExecutionRoleArn'].OutputValue | [0]" \
+            --output text)
+
+          [[ -n "$BUCKET" && "$BUCKET" != "None" ]] || {
+            echo "::error::ArtifactBucketName output missing"
+            exit 1
+          }
+
+          [[ -n "$EXECUTION_ROLE" && "$EXECUTION_ROLE" != "None" ]] || {
+            echo "::error::CloudFormationExecutionRoleArn output missing"
+            exit 1
+          }
+
+          echo "bucket=$BUCKET" >> "$GITHUB_OUTPUT"
+          echo "execution_role=$EXECUTION_ROLE" >> "$GITHUB_OUTPUT"
+
+      - name: Package dashboard
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -s dashboard/wsgi.py
+          test -s dashboard/requirements.txt
+
+          rm -rf build/dashboard dashboard.zip
+          mkdir -p build/dashboard
+          cp -r dashboard build/dashboard/dashboard
+          find build/dashboard -name '__pycache__' -type d -prune -exec rm -rf {} +
+
+          (cd build/dashboard && zip -qr ../../dashboard.zip .)
+          test -s dashboard.zip
+
+      - name: Upload dashboard package
+        run: |
+          aws s3 cp dashboard.zip \
+            "s3://${{ steps.deployment.outputs.bucket }}/medislot/${ENVIRONMENT}/dashboard/dashboard-${GITHUB_SHA}.zip" \
+            --region "$AWS_REGION"
+
+      - name: Deploy dashboard
+        shell: bash
+        env:
+          DASHBOARD_ADMIN_CIDR: ${{ vars.DASHBOARD_ADMIN_CIDR }}
+        run: |
+          set -euo pipefail
+
+          aws cloudformation deploy \
+            --stack-name "medislot-${ENVIRONMENT}-dashboard" \
+            --template-file infrastructure/dashboard-stack.yaml \
+            --role-arn "${{ steps.deployment.outputs.execution_role }}" \
+            --parameter-overrides \
+              Environment="${ENVIRONMENT}" \
+              AdminCidr="${DASHBOARD_ADMIN_CIDR}" \
+              DashboardCodeS3Bucket="${{ steps.deployment.outputs.bucket }}" \
+              DashboardCodeS3Key="medislot/${ENVIRONMENT}/dashboard/dashboard-${GITHUB_SHA}.zip" \
+            --no-fail-on-empty-changeset \
+            --region "$AWS_REGION"
+
+      - name: Verify dashboard stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "medislot-${ENVIRONMENT}-dashboard" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].StackStatus' --output text)
+
+          echo "Dashboard stack status: $STATUS"
+          [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
+
+          URL=$(aws cloudformation describe-stacks \
+            --stack-name "medislot-${ENVIRONMENT}-dashboard" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='DashboardUrl'].OutputValue | [0]" \
+            --output text)
+
+          [[ -n "$URL" && "$URL" != "None" ]] || {
+            echo "::error::DashboardUrl output is missing"
+            exit 1
+          }
+          echo "MediSlot dashboard URL (reachable from DASHBOARD_ADMIN_CIDR only): $URL"

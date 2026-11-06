@@ -389,7 +389,14 @@ Resources:
                   - cloudwatch:GetMetricData
                   - cloudwatch:GetMetricStatistics
                   - cloudwatch:ListMetrics
+                  - cloudwatch:DescribeAlarms
                 Resource: '*'
+              # The instance downloads its own package at boot. Read-only, one prefix.
+              - Sid: ReadDashboardPackage
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource: !Sub arn:${AWS::Partition}:s3:::medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-artifacts/medislot/${Environment}/dashboard/*
               - Sid: ReadDashboardLogs
                 Effect: Allow
                 Action:
@@ -455,6 +462,13 @@ Resources:
                 Condition:
                   StringEquals:
                     iam:PassedToService: lambda.amazonaws.com
+              - Sid: PassOnlyDashboardInstanceRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt DashboardEC2Role.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: ec2.amazonaws.com
               - Sid: ManageMediSlotAuthLogGroups
                 Effect: Allow
                 Action:
@@ -491,6 +505,90 @@ Resources:
                 Resource:
                   - !Sub arn:${AWS::Partition}:s3:::medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-artifacts/medislot/${Environment}/auth/*
                   - !Sub arn:${AWS::Partition}:s3:::medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-artifacts/medislot/${Environment}/app/*
+
+              # ---- Dashboard and monitoring stacks ------------------------------
+              # EC2 write actions cannot be limited to a resource name, so they are
+              # limited to this region instead. Instances, security groups and the
+              # Elastic IP created by dashboard-stack carry the Project tag.
+              - Sid: DescribeDashboardInfrastructure
+                Effect: Allow
+                Action:
+                  - ec2:DescribeInstances
+                  - ec2:DescribeInstanceAttribute
+                  - ec2:DescribeInstanceTypes
+                  - ec2:DescribeInstanceCreditSpecifications
+                  - ec2:DescribeImages
+                  - ec2:DescribeVolumes
+                  - ec2:DescribeAddresses
+                  - ec2:DescribeTags
+                  - ec2:DescribeSecurityGroupRules
+                  - ec2:DescribeIamInstanceProfileAssociations
+                  - ec2:DescribeAvailabilityZones
+                Resource: '*'
+              - Sid: ManageDashboardInstanceAndNetworking
+                Effect: Allow
+                Action:
+                  - ec2:RunInstances
+                  - ec2:StartInstances
+                  - ec2:StopInstances
+                  - ec2:TerminateInstances
+                  - ec2:ModifyInstanceAttribute
+                  - ec2:ModifyInstanceMetadataOptions
+                  - ec2:ModifyInstanceCreditSpecification
+                  - ec2:CreateTags
+                  - ec2:DeleteTags
+                  - ec2:CreateSecurityGroup
+                  - ec2:DeleteSecurityGroup
+                  - ec2:AuthorizeSecurityGroupIngress
+                  - ec2:AuthorizeSecurityGroupEgress
+                  - ec2:RevokeSecurityGroupIngress
+                  - ec2:RevokeSecurityGroupEgress
+                  - ec2:AllocateAddress
+                  - ec2:ReleaseAddress
+                  - ec2:AssociateAddress
+                  - ec2:DisassociateAddress
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: !Ref AWS::Region
+              # CloudFormation resolves the public Amazon Linux AMI parameter with
+              # the deploying role's credentials.
+              - Sid: ReadPublicAmiParameters
+                Effect: Allow
+                Action:
+                  - ssm:GetParameters
+                  - ssm:GetParameter
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}::parameter/aws/service/ami-amazon-linux-latest/*
+              - Sid: ManageMediSlotAlarms
+                Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricAlarm
+                  - cloudwatch:DeleteAlarms
+                  - cloudwatch:TagResource
+                  - cloudwatch:UntagResource
+                  - cloudwatch:ListTagsForResource
+                Resource: !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:medislot-${Environment}-*
+              - Sid: DescribeMediSlotAlarms
+                Effect: Allow
+                Action:
+                  - cloudwatch:DescribeAlarms
+                Resource: '*'
+              - Sid: ManageMediSlotAlarmTopic
+                Effect: Allow
+                Action:
+                  - sns:CreateTopic
+                  - sns:DeleteTopic
+                  - sns:GetTopicAttributes
+                  - sns:SetTopicAttributes
+                  - sns:Subscribe
+                  - sns:Unsubscribe
+                  - sns:GetSubscriptionAttributes
+                  - sns:ListSubscriptionsByTopic
+                  - sns:TagResource
+                  - sns:UntagResource
+                  - sns:ListTagsForResource
+                Resource:
+                  - !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-*
               # Permission required by CloudFormation AWS::SSM::Parameter resources
               - Sid: ManageMediSlotAuthSSMParameters
                 Effect: Allow
