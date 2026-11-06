@@ -9,9 +9,6 @@ Required environment variables:
     TOKEN_REVOCATIONS_TABLE
     ENVIRONMENT
 
-SSM setting:
-    /medislot/{ENVIRONMENT}/auth/access-token-seconds
-
 DynamoDB schema:
     token-revocations partition key: jti (String)
 """
@@ -30,7 +27,6 @@ from botocore.config import Config
 
 REGION = os.environ.get("AWS_REGION", "us-east-1")
 ENVIRONMENT = os.environ["ENVIRONMENT"]
-CONFIG_PREFIX = f"/medislot/{ENVIRONMENT}/auth"
 
 CLIENT_CONFIG = Config(
     connect_timeout=3,
@@ -45,7 +41,6 @@ JWT_SECRET_PARAMETER = os.environ["JWT_SECRET_PARAMETER"]
 TOKEN_REVOCATIONS_TABLE = DDB.Table(os.environ["TOKEN_REVOCATIONS_TABLE"])
 
 _secret_cache = None
-_access_token_seconds_cache = None
 
 
 def secret():
@@ -53,11 +48,11 @@ def secret():
     global _secret_cache
 
     if _secret_cache is None:
-        response = SSM.get_parameter(
+        result = SSM.get_parameter(
             Name=JWT_SECRET_PARAMETER,
             WithDecryption=True,
         )
-        value = response.get("Parameter", {}).get("Value")
+        value = result.get("Parameter", {}).get("Value")
 
         if not isinstance(value, str) or len(value.encode("utf-8")) < 32:
             raise RuntimeError("JWT signing secret must be at least 32 bytes")
@@ -65,30 +60,6 @@ def secret():
         _secret_cache = value.encode("utf-8")
 
     return _secret_cache
-
-
-def access_token_seconds():
-    """Read the same configurable access-token lifetime used by auth_handler."""
-    global _access_token_seconds_cache
-
-    if _access_token_seconds_cache is None:
-        response = SSM.get_parameter(
-            Name=f"{CONFIG_PREFIX}/access-token-seconds",
-            WithDecryption=False,
-        )
-        value = response.get("Parameter", {}).get("Value")
-
-        try:
-            configured_seconds = int(value)
-        except (TypeError, ValueError):
-            raise RuntimeError("Invalid access-token-seconds setting")
-
-        if configured_seconds <= 0:
-            raise RuntimeError("access-token-seconds must be positive")
-
-        _access_token_seconds_cache = configured_seconds
-
-    return _access_token_seconds_cache
 
 
 def b64url_decode(value):
@@ -124,7 +95,6 @@ def decode(token):
         if not isinstance(header, dict) or not isinstance(claims, dict):
             return None
 
-        # auth_handler.py signs tokens with HS256 and header typ=JWT.
         if header.get("alg") != "HS256" or header.get("typ") != "JWT":
             return None
 
@@ -139,8 +109,6 @@ def decode(token):
         if not hmac.compare_digest(expected_signature, signature_part):
             return None
 
-        # auth_handler.py intentionally issues exactly these five claims:
-        # sub, role, iat, exp, jti. Do not require a separate typ/iss/aud claim.
         if set(claims.keys()) != {"sub", "role", "iat", "exp", "jti"}:
             return None
 
@@ -160,17 +128,13 @@ def decode(token):
             return None
 
         now = int(time.time())
-        if issued_at > now or expires_at <= now:
-            return None
-
-        lifetime = access_token_seconds()
-        if expires_at - issued_at != lifetime:
+        if issued_at > now or expires_at <= now or expires_at <= issued_at:
             return None
 
         return claims
 
     except Exception:
-        # Never log or expose token contents, claims, or signing secrets.
+        # Fail closed; do not expose token contents or signing secrets.
         return None
 
 
@@ -210,14 +174,17 @@ def lambda_handler(event, context):
         unauthorized()
 
     # HTTP API Lambda authorizer payload format 1.0 supplies methodArn.
-    # Do not fall back to a wildcard resource.
     resource = event.get("methodArn")
     if not isinstance(resource, str) or not resource:
         unauthorized()
 
+    event_headers = event.get("headers") or {}
+    if not isinstance(event_headers, dict):
+        unauthorized()
+
     headers = {
         str(key).lower(): value
-        for key, value in (event.get("headers") or {}).items()
+        for key, value in event_headers.items()
     }
 
     authorization = headers.get("authorization")
@@ -237,7 +204,6 @@ def lambda_handler(event, context):
         unauthorized()
 
     try:
-        # Final token-revocations table schema: partition key jti (String).
         result = TOKEN_REVOCATIONS_TABLE.get_item(
             Key={"jti": claims["jti"]},
             ConsistentRead=True,
@@ -247,7 +213,6 @@ def lambda_handler(event, context):
             unauthorized()
 
     except Exception as exc:
-        # Fail closed if revocation status cannot be established.
         if str(exc) == "Unauthorized":
             raise
         print(f"Revocation lookup failed: {type(exc).__name__}")
@@ -259,4 +224,3 @@ def lambda_handler(event, context):
         resource=resource,
         claims=claims,
     )
-    

@@ -332,13 +332,11 @@ def create_refresh_token(user_id, role):
         ConditionExpression="attribute_not_exists(tokenHash)",
     )
     return raw_token, expires
-
 def rotate_refresh_token(old_token, user, role):
     """Atomically consume the old refresh token and create its replacement."""
     now = int(time.time())
     old_hash = token_hash(old_token)
     user_id = str(user["user_id"])
-
     old_item = REFRESH_TABLE.get_item(
         Key={"tokenHash": old_hash},
         ConsistentRead=True,
@@ -353,14 +351,12 @@ def rotate_refresh_token(old_token, user, role):
         raise ValueError("Refresh token role mismatch")
     if expiry_timestamp(old_item.get("expiresAt")) <= now:
         raise ValueError("Refresh token has expired")
-
     session_user = dict(user)
     session_user["role"] = role
     access_token, _ = create_access_token(session_user)
     new_token = secrets.token_urlsafe(48)
     new_hash = token_hash(new_token)
     expires = now + settings()["refresh_token_seconds"]
-
     DDB_CLIENT.transact_write_items(
         TransactItems=[
             {
@@ -380,10 +376,11 @@ def rotate_refresh_token(old_token, user, role):
                     "TableName": REFRESH_TABLE.name,
                     "Key": {"tokenHash": {"S": old_hash}},
                     "ConditionExpression": (
-                        "userId = :user_id AND attribute_exists(expiresAt)"
+                        "userId = :user_id AND expiresAt > :now"
                     ),
                     "ExpressionAttributeValues": {
                         ":user_id": {"S": user_id},
+                        ":now": {"N": str(now)},
                     },
                 }
             },
@@ -396,13 +393,11 @@ def rotate_refresh_token(old_token, user, role):
         "refresh_token": new_token,
         "refresh_expires_in": settings()["refresh_token_seconds"],
     }
-
 def register(data, role):
     """Create exactly one patient OR doctor account for an email address."""
     name = data.get("full_name")
     email = data.get("email")
     password = data.get("password")
-
     if role not in ("doctor", "patient"):
         return response(400, {"error": "Invalid registration role"})
     if not isinstance(name, str) or not name.strip() or len(name.strip()) > 120:
@@ -424,7 +419,6 @@ def register(data, role):
                 )
             },
         )
-
     name = name.strip()
     email = email.strip().lower()
     try:
@@ -444,7 +438,6 @@ def register(data, role):
                             409,
                             {"error": "This email is already registered. Each email can have only one account."},
                         )
-
                     user_id = str(uuid.uuid4())
                     cur.execute(
                         """
@@ -464,7 +457,6 @@ def register(data, role):
             except Exception:
                 conn.rollback()
                 raise
-
         return response(
             201,
             {
@@ -489,18 +481,15 @@ def register(data, role):
         print(f"Registration failed: {type(exc).__name__}: {exc}")
         traceback.print_exc()
         return response(500, {"error": "Internal server error"})
-
 def login(data, role):
     email = data.get("email")
     password = data.get("password")
-
     if role not in ("doctor", "patient"):
         return response(400, {"error": "Invalid login role"})
     if not isinstance(email, str) or not email.strip():
         return response(400, {"error": "email is required"})
     if not isinstance(password, str):
         return response(400, {"error": "password is required"})
-
     try:
         with db_connection() as conn:
             with conn.cursor() as cur:
@@ -514,7 +503,6 @@ def login(data, role):
                     (email.strip().lower(), role),
                 )
                 user = cur.fetchone()
-
         if (
             not user
             or not user["is_active"]
@@ -522,12 +510,10 @@ def login(data, role):
             or not verify_password(password, user["password_hash"])
         ):
             return response(401, {"error": "Invalid email or password"})
-
         session_user = dict(user)
         session_user["role"] = role
         access_token, _ = create_access_token(session_user)
         refresh_token, _ = create_refresh_token(user["user_id"], role)
-
         return response(
             200,
             {
@@ -549,12 +535,10 @@ def login(data, role):
         print(f"Login failed: {type(exc).__name__}: {exc}")
         traceback.print_exc()
         return response(500, {"error": "Internal server error"})
-
 def refresh(data):
     raw_token = data.get("refresh_token") or data.get("refreshToken")
     if not isinstance(raw_token, str) or not raw_token.strip():
         return response(401, {"error": "Invalid or expired refresh token"})
-
     raw_token = raw_token.strip()
     try:
         item = REFRESH_TABLE.get_item(
@@ -563,7 +547,6 @@ def refresh(data):
         ).get("Item")
         if not item or expiry_timestamp(item.get("expiresAt")) <= int(time.time()):
             return response(401, {"error": "Invalid or expired refresh token"})
-
         with db_connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -576,20 +559,17 @@ def refresh(data):
                     (item["userId"],),
                 )
                 user = cur.fetchone()
-
         if (
             not user
             or not user["is_active"]
             or str(user["user_id"]) != str(item["userId"])
         ):
             return response(401, {"error": "Invalid refresh token"})
-
         # The final users schema has exactly one ENUM role per account.
         # DynamoDB refresh-token records intentionally do not duplicate it.
         selected_role = user["role"]
         if selected_role not in ("doctor", "patient"):
             return response(401, {"error": "Refresh token role is no longer valid"})
-
         return response(
             200,
             rotate_refresh_token(raw_token, user, selected_role),
@@ -607,7 +587,6 @@ def refresh(data):
         print("Refresh DynamoDB error message:", error.get("Message"))
         if reasons:
             print("Refresh DynamoDB cancellation reasons:", reasons)
-
         if code == "ConditionalCheckFailedException":
             return response(
                 401,
@@ -626,7 +605,6 @@ def refresh(data):
             print("Refresh transaction cancellation reasons:", cancellation_reasons)
             traceback.print_exc()
             return response(500, {"error": "Unable to rotate refresh token"})
-
         print(f"Refresh failed: {type(exc).__name__}: {exc}")
         traceback.print_exc()
         return response(500, {"error": "Internal server error"})
@@ -634,7 +612,6 @@ def refresh(data):
         print(f"Refresh failed: {type(exc).__name__}: {exc}")
         traceback.print_exc()
         return response(500, {"error": "Internal server error"})
-
 def logout(event, data):
     """
     Log out by consuming a refresh token.
@@ -688,10 +665,11 @@ def logout(event, data):
                     # Expiry was validated from the strongly consistent read
                     # above; the condition guards against concurrent reuse.
                     "ConditionExpression": (
-                        "userId = :user_id AND attribute_exists(expiresAt)"
+                        "userId = :user_id AND expiresAt > :now"
                     ),
                     "ExpressionAttributeValues": {
                         ":user_id": {"S": owner_id},
+                        ":now": {"N": str(int(time.time()))},
                     },
                 }
             }

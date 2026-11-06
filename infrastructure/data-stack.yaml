@@ -2,7 +2,8 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   MediSlot data stack. Creates the private MySQL database and the DynamoDB
-  booking, waitlist, offer and dispatch tables. Reuses the existing private
+  booking, waitlist, offer and dispatch tables. Refresh-token, revocation and
+  idempotency tables plus the doctor-files bucket must already exist. Reuses the existing private
   Lambda artifacts bucket and applies the HTTPS-only policy to the existing
   doctor profile files bucket.
 
@@ -81,11 +82,13 @@ Resources:
       MaxAllocatedStorage: !Ref DBMaxAllocatedStorage
       StorageType: gp3
 
-      # RDS storage encryption is disabled.
-      StorageEncrypted: false
+      # Encrypt RDS storage with the AWS-managed default KMS key.
+      StorageEncrypted: true
 
       PubliclyAccessible: false
-      MultiAZ: !If [IsProd, true, false]
+      # The approved MediSlot schema specifies a single-AZ RDS instance.
+      # The DB subnet group still spans two Availability Zones.
+      MultiAZ: false
       BackupRetentionPeriod: !If [IsProd, 7, 1]
       DeletionProtection: !If [IsProd, true, false]
       AutoMinorVersionUpgrade: true
@@ -282,9 +285,7 @@ Resources:
       KeySchema:
         - AttributeName: dispatchKey
           KeyType: HASH
-      TimeToLiveSpecification:
-        AttributeName: ttl
-        Enabled: true
+      # No TTL: dispatch-log records are retained according to the approved schema.
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: !If [IsProd, true, false]
       SSESpecification:

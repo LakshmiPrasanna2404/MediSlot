@@ -26,6 +26,7 @@ import boto3
 import pymysql
 from botocore.config import Config
 from botocore.exceptions import ClientError
+from boto3.dynamodb.conditions import Key
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
@@ -45,6 +46,12 @@ AWS_CONFIG = Config(
 )
 SSM = boto3.client("ssm", region_name=REGION, config=AWS_CONFIG)
 S3 = boto3.client("s3", region_name=REGION, config=AWS_CONFIG)
+DDB = boto3.resource("dynamodb", region_name=REGION, config=AWS_CONFIG)
+SLOTS = DDB.Table(os.environ["SLOTS_TABLE"])
+SEATS = DDB.Table(os.environ["SEATS_TABLE"])
+WAITLIST = DDB.Table(os.environ["WAITLIST_TABLE"])
+HOLD_OFFERS = DDB.Table(os.environ["HOLD_OFFERS_TABLE"])
+IDEMPOTENCY = DDB.Table(os.environ["IDEMPOTENCY_TABLE"])
 
 _db_credentials = None
 
@@ -55,8 +62,10 @@ PROFILE_FIELDS = {
     "city": (100, True),
     "state": (100, False),
     "country": (100, True),
-    "qualification": (180, False),
-    "experience_years": (None, False),
+    "qualifications": (255, False),
+    "years_experience": (None, False),
+    "languages": (100, False),
+    "licence_number": (50, False),
     "bio": (None, False),
     "hospital_id": (None, False),
     "timezone": (64, True),
@@ -99,7 +108,7 @@ def response(status, payload):
         "Cache-Control": "no-store",
         "Access-Control-Allow-Origin": os.environ.get("CORS_ORIGIN", "*"),
         "Access-Control-Allow-Headers": "Content-Type,Authorization",
-        "Access-Control-Allow-Methods": "GET,POST,PUT,DELETE,OPTIONS",
+        "Access-Control-Allow-Methods": "GET,POST,PUT,PATCH,DELETE,OPTIONS",
     }
     if status == 204:
         # A 204 response must not carry a body.
@@ -226,11 +235,11 @@ def validate_profile(body, partial):
             continue
 
         value = body[field]
-        if field == "experience_years":
+        if field == "years_experience":
             if value is None or value == "":
                 result[field] = None
             elif isinstance(value, bool) or not isinstance(value, int) or not 0 <= value <= 80:
-                raise APIError(400, "experience_years must be an integer from 0 to 80")
+                raise APIError(400, "years_experience must be an integer from 0 to 80")
             else:
                 result[field] = value
         elif field == "hospital_id":
@@ -255,73 +264,84 @@ def validate_profile(body, partial):
     return result
 
 
-def doctor_profile(doctor_id):
+def doctor_profile(user_id):
     sql = """
-        SELECT d.doctor_id, u.full_name, u.email,
-               d.hospital_id, h.hospital_name,
+        SELECT d.doctor_id, d.user_id, u.full_name, u.email,
+               d.hospital_id, h.name AS hospital_name,
+               d.specialisation_id, d.licence_number,
                d.first_name, d.last_name, d.phone,
-               d.city, d.state, d.country, d.qualification,
-               d.experience_years, d.bio, d.profile_photo_s3_key,
+               d.city, d.state, d.country, d.qualifications,
+               d.years_experience, d.languages, d.bio, d.profile_photo_s3_key,
                d.timezone, d.is_active, d.created_at, d.updated_at
         FROM doctors d
-        JOIN users u ON u.user_id = d.doctor_id
+        JOIN users u ON u.user_id = d.user_id
         LEFT JOIN hospitals h ON h.hospital_id = d.hospital_id
-        WHERE d.doctor_id = %s
+        WHERE d.user_id = %s AND u.is_active = 1
     """
     with db_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute(sql, (doctor_id,))
-            row = cur.fetchone()
-    return row
+            cur.execute(sql, (user_id,))
+            return cur.fetchone()
 
 
-def get_profile(doctor_id):
-    row = doctor_profile(doctor_id)
+def resolve_doctor_id(user_id):
+    row = doctor_profile(user_id)
+    if not row:
+        raise APIError(404, "Complete your doctor profile before using this endpoint")
+    return row["doctor_id"]
+
+
+def get_profile(user_id):
+    row = doctor_profile(user_id)
     if not row:
         raise APIError(404, "Doctor profile not found. Create it with PUT /doctors/me.")
     return {"profile": row}
 
 
-def save_profile(doctor_id, body):
+def save_profile(user_id, body):
     values = validate_profile(body, partial=True)
     if not values:
         raise APIError(400, "Provide at least one profile field")
 
-    existing = doctor_profile(doctor_id)
+    existing = doctor_profile(user_id)
     if existing:
+        # Licence number is immutable after profile creation.
+        if "licence_number" in values and values["licence_number"] != existing["licence_number"]:
+            raise APIError(400, "licence_number cannot be changed after profile creation")
+        values.pop("licence_number", None)
+        if not values:
+            return 200, {"message": "Doctor profile unchanged", "profile": existing}
         assignments = ", ".join(f"{key} = %s" for key in values)
-        params = list(values.values()) + [doctor_id]
+        params = list(values.values()) + [existing["doctor_id"]]
         sql = f"UPDATE doctors SET {assignments} WHERE doctor_id = %s"
         with db_connection() as conn:
             with conn.cursor() as cur:
-                if "hospital_id" in values and values["hospital_id"] is not None:
+                if values.get("hospital_id") is not None:
                     cur.execute("SELECT hospital_id FROM hospitals WHERE hospital_id=%s",
                                 (values["hospital_id"],))
                     if not cur.fetchone():
                         raise APIError(400, "hospital_id does not exist")
                 cur.execute(sql, params)
             conn.commit()
-        return 200, {"message": "Doctor profile updated", "profile": doctor_profile(doctor_id)}
+        return 200, {"message": "Doctor profile updated", "profile": doctor_profile(user_id)}
 
-    # First profile creation. doctor_id comes from the authorizer and must
-    # already exist as a doctor-role user created by the authentication flow.
-    required = {"first_name", "last_name", "city"}
+    required = {"first_name", "last_name", "city", "licence_number"}
     missing = sorted(required - set(values))
     if missing:
-        raise APIError(400, "Required fields missing for profile creation",
-                       {"fields": missing})
+        raise APIError(400, "Required fields missing for profile creation", {"fields": missing})
 
     values.setdefault("country", "India")
     values.setdefault("timezone", "Asia/Kolkata")
-    columns = ["doctor_id"] + list(values.keys())
-    params = [doctor_id] + list(values.values())
+    doctor_id = str(uuid.uuid4())
+    columns = ["doctor_id", "user_id"] + list(values.keys())
+    params = [doctor_id, user_id] + list(values.values())
     placeholders = ", ".join(["%s"] * len(columns))
     sql = f"INSERT INTO doctors ({', '.join(columns)}) VALUES ({placeholders})"
 
     with db_connection() as conn:
         with conn.cursor() as cur:
-            cur.execute("SELECT user_id FROM users WHERE user_id=%s AND FIND_IN_SET('doctor', role) > 0 AND is_active=1",
-                        (doctor_id,))
+            cur.execute("SELECT user_id FROM users WHERE user_id=%s AND role='doctor' AND is_active=1",
+                        (user_id,))
             if not cur.fetchone():
                 raise APIError(403, "Authenticated user is not an active doctor")
             if values.get("hospital_id") is not None:
@@ -331,7 +351,7 @@ def save_profile(doctor_id, body):
                     raise APIError(400, "hospital_id does not exist")
             cur.execute(sql, params)
         conn.commit()
-    return 201, {"message": "Doctor profile created", "profile": doctor_profile(doctor_id)}
+    return 201, {"message": "Doctor profile created", "profile": doctor_profile(user_id)}
 
 
 def create_photo_upload(doctor_id, body):
@@ -408,20 +428,20 @@ def check_consultation_rules(name, duration, capacity):
 
 
 def validate_consultation(body, partial=False):
-    allowed = {"consultation_name", "duration_minutes", "fee", "capacity", "description"}
+    allowed = {"name", "duration_minutes", "fee", "capacity", "description"}
     unknown = set(body) - allowed
     if unknown:
         raise APIError(400, "Unsupported consultation fields", {"fields": sorted(unknown)})
     result = {}
 
-    if "consultation_name" in body:
-        name = clean_text(body["consultation_name"], "consultation_name", 40, True)
+    if "name" in body:
+        name = clean_text(body["name"], "name", 40, True)
         if name not in CONSULTATION_NAMES:
-            raise APIError(400, "Invalid consultation_name",
+            raise APIError(400, "Invalid name",
                            {"allowed": sorted(CONSULTATION_NAMES)})
-        result["consultation_name"] = name
+        result["name"] = name
     elif not partial:
-        raise APIError(400, "consultation_name is required")
+        raise APIError(400, "name is required")
 
     if "duration_minutes" in body:
         v = body["duration_minutes"]
@@ -462,7 +482,7 @@ def validate_consultation(body, partial=False):
         # Every rule input is present on create. Partial updates are checked
         # against the stored row in update_consultation().
         check_consultation_rules(
-            result["consultation_name"], result["duration_minutes"], result["capacity"]
+            result["name"], result["duration_minutes"], result["capacity"]
         )
     return result
 
@@ -471,7 +491,7 @@ def consultation_types(doctor_id):
     with db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT consultation_type_id, consultation_name, duration_minutes,
+                """SELECT consultation_type_id, name, duration_minutes,
                           fee, capacity, description, is_active, created_at, updated_at
                    FROM consultation_types
                    WHERE doctor_id=%s
@@ -484,13 +504,13 @@ def consultation_types(doctor_id):
 
 def create_consultation(doctor_id, body):
     values = validate_consultation(body)
-    consultation_id = str(uuid.uuid4())
-    columns = ["consultation_type_id", "doctor_id"] + list(values)
-    params = [consultation_id, doctor_id] + list(values.values())
+    columns = ["doctor_id"] + list(values)
+    params = [doctor_id] + list(values.values())
     sql = f"INSERT INTO consultation_types ({', '.join(columns)}) VALUES ({', '.join(['%s'] * len(columns))})"
     with db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(sql, params)
+            consultation_id = cur.lastrowid
         conn.commit()
     return {"message": "Consultation type created",
             "consultation_type_id": consultation_id}
@@ -506,7 +526,7 @@ def update_consultation(doctor_id, consultation_id, body):
             # Read the stored row so the name/duration/capacity rules are
             # checked against the final combination, not just the changed field.
             cur.execute(
-                """SELECT consultation_name, duration_minutes, capacity
+                """SELECT name, duration_minutes, capacity
                    FROM consultation_types
                    WHERE consultation_type_id=%s AND doctor_id=%s
                    FOR UPDATE""",
@@ -517,7 +537,7 @@ def update_consultation(doctor_id, consultation_id, body):
                 raise APIError(404, "Consultation type not found")
             merged = {**current, **values}
             check_consultation_rules(
-                merged["consultation_name"],
+                merged["name"],
                 int(merged["duration_minutes"]),
                 int(merged["capacity"]),
             )
@@ -615,7 +635,9 @@ def replace_availability(doctor_id, body):
             )
             if effective_until and effective_until < effective_from:
                 raise ValueError()
-            consultation_id = str(uuid.UUID(p["consultation_type_id"]))
+            consultation_id = int(p["consultation_type_id"])
+            if consultation_id <= 0:
+                raise ValueError()
         except (KeyError, ValueError, TypeError, AttributeError):
             raise APIError(400, f"patterns[{index}] has invalid or missing values")
         validated.append((str(uuid.uuid4()), doctor_id, consultation_id, day,
@@ -649,25 +671,19 @@ def replace_availability(doctor_id, body):
 
 
 def create_blackout(doctor_id, body):
-    blackout_date = parse_iso_date(body.get("blackout_date"), "blackout_date")
-    start_value = body.get("start_time")
-    end_value = body.get("end_time")
-    if (start_value is None) != (end_value is None):
-        raise APIError(400, "Provide both start_time and end_time, or neither for a full-day blackout")
-    start = parse_clock(start_value, "start_time") if start_value else None
-    end = parse_clock(end_value, "end_time") if end_value else None
-    if start and end <= start:
-        raise APIError(400, "end_time must be later than start_time")
+    unknown = set(body) - {"date", "reason"}
+    if unknown:
+        raise APIError(400, "Unsupported blackout fields", {"fields": sorted(unknown)})
+    blackout_date = parse_iso_date(body.get("date"), "date")
     reason = clean_text(body.get("reason"), "reason", 255)
-    blackout_id = str(uuid.uuid4())
     with db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """INSERT INTO blackout_dates
-                   (blackout_id, doctor_id, blackout_date, start_time, end_time, reason)
-                   VALUES (%s,%s,%s,%s,%s,%s)""",
-                (blackout_id, doctor_id, blackout_date, start, end, reason),
+                """INSERT INTO blackout_dates (doctor_id, `date`, reason)
+                   VALUES (%s,%s,%s)""",
+                (doctor_id, blackout_date, reason),
             )
+            blackout_id = cur.lastrowid
         conn.commit()
     return {"message": "Blackout date created", "blackout_id": blackout_id}
 
@@ -676,8 +692,8 @@ def list_blackouts(doctor_id):
     with db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                """SELECT blackout_id, blackout_date, start_time, end_time, reason, created_at
-                   FROM blackout_dates WHERE doctor_id=%s ORDER BY blackout_date""",
+                """SELECT blackout_id, `date`, reason, created_at
+                   FROM blackout_dates WHERE doctor_id=%s ORDER BY `date`""",
                 (doctor_id,),
             )
             rows = cur.fetchall()
@@ -685,6 +701,10 @@ def list_blackouts(doctor_id):
 
 
 def delete_blackout(doctor_id, blackout_id):
+    try:
+        blackout_id = int(blackout_id)
+    except (TypeError, ValueError):
+        raise APIError(400, "blackout_id must be an integer")
     with db_connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -702,7 +722,10 @@ def schedule_day(doctor_id, query):
     if not day_text:
         raise APIError(400, "date query parameter is required (YYYY-MM-DD)")
     requested_day = parse_iso_date(day_text, "date")
-    profile = doctor_profile(doctor_id)
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT timezone FROM doctors WHERE doctor_id=%s AND is_active=1", (doctor_id,))
+            profile = cur.fetchone()
     if not profile:
         raise APIError(404, "Doctor profile not found")
     zone_name = profile["timezone"] or "Asia/Kolkata"
@@ -713,7 +736,7 @@ def schedule_day(doctor_id, query):
 
     local_start = datetime.combine(requested_day, time.min, tzinfo=zone)
     local_end = datetime.combine(requested_day + timedelta(days=1), time.min, tzinfo=zone)
-    # MySQL appointment_start is stored as UTC-naive DATETIME(6).
+    # MySQL slot_start_utc/slot_end_utc are stored as UTC-naive DATETIME.
     utc_start = local_start.astimezone(timezone.utc).replace(tzinfo=None)
     utc_end = local_end.astimezone(timezone.utc).replace(tzinfo=None)
 
@@ -721,17 +744,17 @@ def schedule_day(doctor_id, query):
         with conn.cursor() as cur:
             cur.execute(
                 """SELECT a.appointment_id, a.patient_id, a.consultation_type_id,
-                          a.slot_id, a.appointment_start, a.appointment_end,
-                          a.fee_amount, a.status, p_user.full_name AS patient_name,
-                          p.phone AS patient_phone, ct.consultation_name
+                          a.slot_id, a.slot_start_utc, a.slot_end_utc,
+                          a.consultation_fee, a.status, p_user.full_name AS patient_name,
+                          p.phone AS patient_phone, ct.name AS consultation_name
                    FROM appointments a
                    JOIN patients p ON p.patient_id=a.patient_id
-                   JOIN users p_user ON p_user.user_id=p.patient_id
+                   JOIN users p_user ON p_user.user_id=p.user_id
                    JOIN consultation_types ct ON ct.consultation_type_id=a.consultation_type_id
                    WHERE a.doctor_id=%s
-                     AND a.appointment_start >= %s
-                     AND a.appointment_start < %s
-                   ORDER BY a.appointment_start""",
+                     AND a.slot_start_utc >= %s
+                     AND a.slot_start_utc < %s
+                   ORDER BY a.slot_start_utc""",
                 (doctor_id, utc_start, utc_end),
             )
             appointments = cur.fetchall()
@@ -744,6 +767,235 @@ def schedule_day(doctor_id, query):
     }
 
 
+# ---------------------------------------------------------------------------
+# Patient and public discovery APIs
+# ---------------------------------------------------------------------------
+PATIENT_FIELDS = {
+    "date_of_birth": (10, False), "gender": (10, False), "phone": (20, False),
+    "address": (255, False), "city": (100, False),
+    "emergency_contact_name": (100, False), "emergency_contact_phone": (20, False),
+}
+
+
+def get_actor(event, required_role=None):
+    rc = event.get("requestContext") or {}
+    auth = rc.get("authorizer") or {}
+    ctx = auth.get("lambda") or auth.get("claims") or auth
+    uid = ctx.get("userId") or ctx.get("user_id") or ctx.get("principalId") or auth.get("principalId")
+    role = ctx.get("role")
+    if not uid or not role:
+        raise APIError(401, "Missing authenticated identity")
+    if required_role and role != required_role:
+        raise APIError(403, f"{required_role.title()} access required")
+    if role not in ("doctor", "patient"):
+        raise APIError(403, "Unsupported account role")
+    return str(uid), role
+
+
+def patient_profile(patient_id):
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT p.patient_id, u.full_name, u.email, p.date_of_birth,
+                p.gender, p.phone, p.address, p.city, p.emergency_contact_name,
+                p.emergency_contact_phone, p.created_at, p.updated_at
+                FROM patients p JOIN users u ON u.user_id=p.user_id
+                WHERE p.user_id=%s AND u.is_active=1""", (patient_id,))
+            return cur.fetchone()
+
+
+def get_patient_profile(patient_id):
+    row = patient_profile(patient_id)
+    if not row:
+        raise APIError(404, "Patient profile not found")
+    return {"profile": row}
+
+
+
+def resolve_patient_id(user_id):
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT patient_id FROM patients WHERE user_id=%s", (user_id,))
+            row = cur.fetchone()
+    if not row:
+        raise APIError(404, "Complete your patient profile before using this endpoint")
+    return row["patient_id"]
+
+
+def save_patient_profile(patient_id, body):
+    unknown = set(body) - set(PATIENT_FIELDS)
+    if unknown:
+        raise APIError(400, "Unsupported patient profile fields", {"fields": sorted(unknown)})
+    values = {}
+    for key, (limit, _) in PATIENT_FIELDS.items():
+        if key not in body:
+            continue
+        value = body[key]
+        if key == "date_of_birth":
+            if value in (None, ""):
+                values[key] = None
+            else:
+                try:
+                    values[key] = date.fromisoformat(value).isoformat()
+                except (TypeError, ValueError):
+                    raise APIError(400, "date_of_birth must use YYYY-MM-DD")
+        else:
+            values[key] = clean_text(value, key, limit)
+    if not values:
+        raise APIError(400, "Provide at least one patient profile field")
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT patient_id FROM patients WHERE user_id=%s", (patient_id,))
+            patient_row = cur.fetchone()
+            if not patient_row:
+                actual_patient_id = str(uuid.uuid4())
+                cur.execute("INSERT INTO patients (patient_id, user_id) VALUES (%s,%s)",
+                            (actual_patient_id, patient_id))
+            else:
+                actual_patient_id = patient_row["patient_id"]
+            assignments = ", ".join(f"{k}=%s" for k in values)
+            cur.execute(f"UPDATE patients SET {assignments} WHERE patient_id=%s",
+                        list(values.values()) + [actual_patient_id])
+        conn.commit()
+    return {"message": "Patient profile saved", "profile": patient_profile(patient_id)}
+
+
+def delete_patient_profile(patient_id):
+    # Account deactivation preserves appointment/refund history and referential integrity.
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("UPDATE users SET is_active=0 WHERE user_id=%s AND role='patient'", (patient_id,))
+            if cur.rowcount != 1:
+                raise APIError(404, "Patient account not found")
+        conn.commit()
+    return {"message": "Patient account deactivated"}
+
+
+def discover_doctors(query):
+    terms = []
+    params = []
+    if query.get("city"):
+        terms.append("d.city=%s"); params.append(clean_text(query["city"], "city", 100, True))
+    if query.get("specialisation_id"):
+        try: sid = int(query["specialisation_id"])
+        except (TypeError, ValueError): raise APIError(400, "specialisation_id must be an integer")
+        terms.append("d.specialisation_id=%s"); params.append(sid)
+    where = " AND ".join(["u.is_active=1", "d.is_active=1"] + terms)
+    limit = min(max(int(query.get("limit", 25)), 1), 100)
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(f"""SELECT d.doctor_id, u.full_name, d.hospital_id, h.name AS hospital_name,
+                d.city AS city, h.address AS hospital_address,
+                d.specialisation_id, s.name AS specialisation, d.licence_number,
+                d.years_experience, d.qualifications, d.languages, d.profile_photo_s3_key
+                FROM doctors d JOIN users u ON u.user_id=d.user_id
+                LEFT JOIN hospitals h ON h.hospital_id=d.hospital_id
+                LEFT JOIN specialisations s ON s.specialisation_id=d.specialisation_id
+                WHERE {where} ORDER BY u.full_name LIMIT %s""", params + [limit])
+            return {"doctors": cur.fetchall()}
+
+
+def doctor_public_profile(doctor_id):
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("""SELECT d.doctor_id, u.full_name, d.hospital_id,
+                h.name AS hospital_name, d.city, h.address AS hospital_address,
+                d.specialisation_id, s.name AS specialisation, d.licence_number,
+                d.years_experience, d.qualifications, d.languages, d.profile_photo_s3_key
+                FROM doctors d JOIN users u ON u.user_id=d.user_id
+                LEFT JOIN hospitals h ON h.hospital_id=d.hospital_id
+                LEFT JOIN specialisations s ON s.specialisation_id=d.specialisation_id
+                WHERE d.doctor_id=%s AND u.is_active=1""", (doctor_id,))
+            row = cur.fetchone()
+    if not row:
+        raise APIError(404, "Doctor not found")
+    return {"doctor": row}
+
+
+def doctor_slots(doctor_id, query):
+    start = query.get("from")
+    end = query.get("to")
+    if not start or not end:
+        raise APIError(400, "from and to query parameters are required")
+    try:
+        datetime.fromisoformat(start.replace("Z", "+00:00"))
+        datetime.fromisoformat(end.replace("Z", "+00:00"))
+    except ValueError:
+        raise APIError(400, "from and to must be ISO-8601 timestamps")
+    if end <= start:
+        raise APIError(400, "to must be later than from")
+    result = SLOTS.query(
+        IndexName="GSI_Doctor_Slots",
+        KeyConditionExpression=Key("doctorId").eq(doctor_id)
+            & Key("startTime").between(start, end),
+    )
+    return {"slots": result.get("Items", [])}
+
+
+def patient_appointments(patient_id, appointment_id=None):
+    sql = """SELECT appointment_id, patient_id, doctor_id, slot_id, consultation_type_id,
+        availability_id, slot_start_utc, slot_end_utc, consultation_fee, status,
+        reschedule_count, version, created_at, updated_at
+        FROM appointments WHERE patient_id=%s"""
+    params = [patient_id]
+    if appointment_id:
+        sql += " AND appointment_id=%s"; params.append(appointment_id)
+    sql += " ORDER BY slot_start_utc DESC"
+    with db_connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(sql, params); rows = cur.fetchall()
+    if appointment_id and not rows:
+        raise APIError(404, "Appointment not found")
+    return {"appointments": rows} if not appointment_id else {"appointment": rows[0]}
+
+
+def join_waitlist(patient_id, slot_id):
+    slot = SLOTS.get_item(Key={"slotId": slot_id}, ConsistentRead=True).get("Item")
+    if not slot:
+        raise APIError(404, "Slot not found")
+    if slot.get("status") not in ("OPEN", "FULL"):
+        raise APIError(409, "Slot is not accepting waitlist entries")
+    now = int(datetime.now(timezone.utc).timestamp())
+    # queueOrder is allocated atomically on the slot item; patientId is the SK.
+    try:
+        updated = SLOTS.update_item(
+            Key={"slotId": slot_id},
+            UpdateExpression="SET queueOrder = if_not_exists(queueOrder, :zero) + :one",
+            ConditionExpression="attribute_exists(slotId)",
+            ExpressionAttributeValues={":zero": 0, ":one": 1},
+            ReturnValues="UPDATED_NEW",
+        )
+        queue_order = int(updated["Attributes"]["queueOrder"])
+        WAITLIST.put_item(Item={"slotId": slot_id, "patientId": patient_id,
+            "queueOrder": queue_order, "status": "WAITING", "createdAt": now},
+            ConditionExpression="attribute_not_exists(patientId)")
+    except ClientError as exc:
+        if exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException":
+            raise APIError(409, "Already on the waitlist for this slot")
+        raise
+    return {"message": "Added to waitlist", "slot_id": slot_id, "queue_order": queue_order}
+
+
+def patient_waitlists(patient_id):
+    result = WAITLIST.query(IndexName="GSI_Patient_Waitlists",
+        KeyConditionExpression=Key("patientId").eq(patient_id))
+    return {"waitlists": result.get("Items", [])}
+
+
+def leave_waitlist(patient_id, slot_id):
+    WAITLIST.delete_item(Key={"slotId": slot_id, "patientId": patient_id},
+        ConditionExpression="attribute_exists(patientId)")
+    return {"message": "Removed from waitlist"}
+
+
+def accept_waitlist_offer(patient_id, offer_id):
+    offer = HOLD_OFFERS.get_item(Key={"offerId": offer_id}, ConsistentRead=True).get("Item")
+    if not offer or offer.get("patientId") != patient_id:
+        raise APIError(404, "Waitlist offer not found")
+    if offer.get("status") != "LIVE" or int(offer.get("expiresAt", 0)) <= int(datetime.now(timezone.utc).timestamp()):
+        raise APIError(409, "Waitlist offer has expired")
+    raise APIError(501, "Offer acceptance requires the configured booking transaction workflow; no partial booking was made")
+
+
 def lambda_handler(event, context):
     try:
         method, path = path_and_method(event)
@@ -751,17 +1003,70 @@ def lambda_handler(event, context):
         if method == "OPTIONS":
             return response(204, {})
 
-        doctor_id = get_identity(event)
         body = parse_body(event)
         query = event.get("queryStringParameters") or {}
         path_params = event.get("pathParameters") or {}
+        # Public doctor discovery and slot lookup (route authorization is NONE in API Gateway).
+        public_doctor = re.fullmatch(r"/doctors/([0-9a-fA-F-]{36})", path)
+        public_slots = re.fullmatch(r"/doctors/([0-9a-fA-F-]{36})/slots", path)
+        if path == "/doctors" and method == "GET":
+            return response(200, discover_doctors(query))
+        if public_doctor and method == "GET":
+            return response(200, doctor_public_profile(public_doctor.group(1)))
+        if public_slots and method == "GET":
+            return response(200, doctor_slots(public_slots.group(1), query))
 
-        # Doctor profile
+        actor_id, actor_role = get_actor(event)
+
+        # Patient domain APIs
+        if actor_role == "patient":
+            if path == "/patients/me" and method == "GET":
+                return response(200, get_patient_profile(actor_id))
+            if path == "/patients/me" and method == "PUT":
+                return response(200, save_patient_profile(actor_id, body))
+            if path == "/patients/me" and method == "DELETE":
+                return response(200, delete_patient_profile(actor_id))
+            # Patient IDs in the relational schema are distinct from users.user_id.
+            # Resolve only after allowing PUT /patients/me to create the profile.
+            patient_id = resolve_patient_id(actor_id)
+            if path == "/appointments" and method == "GET":
+                return response(200, patient_appointments(patient_id))
+            if path == "/appointments" and method == "POST":
+                raise APIError(501, "Booking endpoint is registered but requires the final slot-to-appointment transaction mapping; no booking was created")
+            appointment_match = re.fullmatch(r"/appointments/([0-9a-fA-F-]{36})", path)
+            if appointment_match and method == "GET":
+                return response(200, patient_appointments(patient_id, appointment_match.group(1)))
+            if appointment_match and method == "PATCH":
+                raise APIError(501, "Rescheduling must run through the configured Step Functions saga; no appointment was changed")
+            if appointment_match and method == "DELETE":
+                raise APIError(501, "Cancellation/refund requires the configured refund transaction and slot-release workflow; no appointment was changed")
+            if path == "/patients/me/waitlists" and method == "GET":
+                return response(200, patient_waitlists(patient_id))
+            waitlist_match = re.fullmatch(r"/slots/([^/]+)/waitlist", path)
+            if waitlist_match and method == "POST":
+                return response(201, join_waitlist(patient_id, waitlist_match.group(1)))
+            if waitlist_match and method == "DELETE":
+                return response(200, leave_waitlist(patient_id, waitlist_match.group(1)))
+            offer_match = re.fullmatch(r"/waitlist-offers/([0-9a-fA-F-]{36})/accept", path)
+            if offer_match and method == "POST":
+                return response(200, accept_waitlist_offer(patient_id, offer_match.group(1)))
+            if path == "/patients/me/refunds" and method == "GET":
+                with db_connection() as conn:
+                    with conn.cursor() as cur:
+                        cur.execute("SELECT refund_id, appointment_id, tier, base_fee_amount, refund_percent, cancellation_fee_amount, refund_amount, reason, created_at FROM refund_ledger WHERE patient_id=%s ORDER BY created_at DESC", (patient_id,))
+                        return response(200, {"refunds": cur.fetchall()})
+            raise APIError(404, "Patient route not found")
+
+        if actor_role != "doctor":
+            raise APIError(403, "Unsupported account role")
+        # Doctor profile can be created before a doctors row exists.
         if path == "/doctors/me" and method == "GET":
-            return response(200, get_profile(doctor_id))
+            return response(200, get_profile(actor_id))
         if path == "/doctors/me" and method in ("PUT", "POST"):
-            status, result = save_profile(doctor_id, body)
+            status, result = save_profile(actor_id, body)
             return response(status, result)
+
+        doctor_id = resolve_doctor_id(actor_id)
 
         # Profile photo upload URL
         if path == "/doctors/me/photo" and method == "POST":
@@ -775,7 +1080,7 @@ def lambda_handler(event, context):
                 return response(201, create_consultation(doctor_id, body))
 
         consultation_match = re.fullmatch(
-            r"/doctors/me/consultation-types/([0-9a-fA-F-]{36})", path
+            r"/doctors/me/consultation-types/(\\d+)", path
         )
         if consultation_match:
             consultation_id = consultation_match.group(1)
@@ -799,7 +1104,7 @@ def lambda_handler(event, context):
                 return response(201, create_blackout(doctor_id, body))
 
         blackout_match = re.fullmatch(
-            r"/doctors/me/blackouts/([0-9a-fA-F-]{36})", path
+            r"/doctors/me/blackouts/(\\d+)", path
         )
         if blackout_match and method == "DELETE":
             return response(200, delete_blackout(doctor_id, blackout_match.group(1)))

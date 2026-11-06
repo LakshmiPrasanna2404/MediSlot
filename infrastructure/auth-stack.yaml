@@ -1,4 +1,3 @@
-
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   MediSlot authentication stack with doctor and patient registration,
@@ -70,7 +69,7 @@ Parameters:
     MaxValue: 10240
     Description: >-
       Authentication Lambda memory in MB. Password hashing (bcrypt) is
-      CPU-bound and Lambda CPU scales with memory, so 1024 keeps login fast.
+      CPU-bound and Lambda CPU scales with memory.
 
   AuthorizerTimeout:
     Type: Number
@@ -87,8 +86,6 @@ Parameters:
     Description: JWT authorizer Lambda memory in MB
 
 Resources:
-
-  # Authentication configuration parameters
   AuthAccessTokenSeconds:
     Type: AWS::SSM::Parameter
     Properties:
@@ -133,7 +130,6 @@ Resources:
         Project: MediSlot
         Environment: !Ref Environment
 
-  # Authentication Lambda logs
   AuthFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -145,7 +141,6 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # JWT Authorizer Lambda logs
   AuthorizerFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -157,7 +152,6 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # Authentication Lambda
   AuthFunction:
     Type: AWS::Lambda::Function
     DependsOn:
@@ -174,7 +168,6 @@ Resources:
           Fn::Sub: medislot-${Environment}-auth-role-arn
       Timeout: !Ref AuthTimeout
       MemorySize: !Ref AuthMemorySize
-      # CI builds the package on x86_64 runners; keep this in sync with it.
       Architectures:
         - x86_64
       Code:
@@ -216,7 +209,6 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # JWT Lambda Authorizer
   AuthorizerFunction:
     Type: AWS::Lambda::Function
     DependsOn:

@@ -16,6 +16,14 @@ Parameters:
     Default: 10.0.0.0/16
     Description: CIDR block for the MediSlot VPC.
 
+  SSHAllowedCidr:
+    Type: String
+    Default: 127.0.0.1/32
+    AllowedPattern: '^(?:[0-9]{1,3}\.){3}[0-9]{1,3}/(?:[0-9]|[12][0-9]|3[0-2])$'
+    Description: >-
+      Public IPv4 CIDR allowed to SSH to the EC2 instance. Set to your current
+      public IP with /32 when deploying. The loopback default keeps SSH closed.
+
   PublicSubnetCidr:
     Type: String
     Default: 10.0.1.0/24
@@ -41,20 +49,40 @@ Parameters:
     Default: 10.0.5.0/24
     Description: CIDR block for the second private RDS subnet.
 
+  # No default on purpose: prefix list IDs differ per region, and a silent
+  # us-east-1 default is wrong everywhere else.
   DynamoDBPrefixListId:
     Type: String
-    Default: pl-02cd2c6b
     AllowedPattern: '^pl-[0-9a-f]{8,17}$'
     ConstraintDescription: Must be a managed prefix list ID such as pl-02cd2c6b.
     Description: >-
-      Managed prefix list ID of the DynamoDB service in the deployment region.
-      The default is the us-east-1 value. For any other region, look it up with
-      aws ec2 describe-managed-prefix-lists --filters
+      AWS-managed prefix list ID for com.amazonaws.REGION.dynamodb in the deployment region.
+      Retrieve it with aws ec2 describe-managed-prefix-lists --filters
       Name=prefix-list-name,Values=com.amazonaws.REGION.dynamodb
+
+  S3PrefixListId:
+    Type: String
+    AllowedPattern: '^pl-[0-9a-f]{8,17}$'
+    ConstraintDescription: Must be the AWS-managed S3 prefix list ID for the deployment region.
+    Description: >-
+      AWS-managed prefix list ID for com.amazonaws.REGION.s3 in the deployment region.
+      Retrieve it with aws ec2 describe-managed-prefix-lists --filters
+      Name=prefix-list-name,Values=com.amazonaws.REGION.s3
+
+  SingleAZInterfaceEndpoints:
+    Type: String
+    Description: >-
+      Place interface endpoints in one AZ only. Interface endpoints are billed per
+      endpoint per AZ per hour and are not Free Tier, so one AZ halves the cost.
+      RDS is single-AZ by design, so this does not reduce real availability.
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
 
   EnableSSMEndpoint:
     Type: String
-    Description: Create the SSM interface endpoint for private Lambda access to Parameter Store.
+    Description: SSM interface endpoint (Parameter Store - JWT secret, config). Required by every Lambda that reads config.
     Default: 'true'
     AllowedValues:
       - 'true'
@@ -62,7 +90,7 @@ Parameters:
 
   EnableCloudWatchLogsEndpoint:
     Type: String
-    Description: Create the CloudWatch Logs interface endpoint for VPC-connected Lambda logging without NAT.
+    Description: CloudWatch Logs interface endpoint for VPC-connected Lambda logging without NAT.
     Default: 'true'
     AllowedValues:
       - 'true'
@@ -70,7 +98,7 @@ Parameters:
 
   EnableSecretsManagerEndpoint:
     Type: String
-    Description: Create the Secrets Manager interface endpoint. Not required when database credentials are read from SSM Parameter Store.
+    Description: Secrets Manager interface endpoint. Not required while credentials are read from SSM Parameter Store.
     Default: 'false'
     AllowedValues:
       - 'true'
@@ -78,27 +106,120 @@ Parameters:
 
   EnableSNSEndpoint:
     Type: String
-    Description: Create the SNS interface endpoint for private Lambda notification publishing.
-    Default: 'true'
+    Description: SNS interface endpoint for notification publishing (needed from Milestone 6).
+    Default: 'false'
     AllowedValues:
       - 'true'
       - 'false'
 
   EnableEventBridgeEndpoint:
     Type: String
-    Description: Create the EventBridge interface endpoint for private Lambda event publishing.
-    Default: 'true'
+    Description: EventBridge interface endpoint for domain event publishing (needed from Milestone 5).
+    Default: 'false'
     AllowedValues:
       - 'true'
       - 'false'
 
   EnableStepFunctionsEndpoint:
     Type: String
-    Description: Create the Step Functions interface endpoint for private Lambda workflow calls.
-    Default: 'true'
+    Description: Step Functions interface endpoint for starting the reschedule saga (needed from Milestone 6).
+    Default: 'false'
     AllowedValues:
       - 'true'
       - 'false'
+
+  EnableSQSEndpoint:
+    Type: String
+    Description: SQS interface endpoint for Lambdas that send to queues (needed from Milestone 6).
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+
+  EnableXRayEndpoint:
+    Type: String
+    Description: X-Ray interface endpoint so VPC-connected Lambdas can send trace segments.
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+
+  EnableMonitoringEndpoint:
+    Type: String
+    Description: >-
+      CloudWatch Monitoring interface endpoint for PutMetricData. Not needed if custom
+      metrics are emitted through Embedded Metric Format in logs.
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+
+  EnableSchedulerEndpoint:
+    Type: String
+    Description: >-
+      EventBridge Scheduler interface endpoint. Only needed if Lambdas create or delete
+      schedules at runtime. Not needed for the recurring sweepers.
+    Default: 'false'
+    AllowedValues:
+      - 'true'
+      - 'false'
+
+Conditions:
+  SingleAZEndpoints: !Equals
+    - !Ref SingleAZInterfaceEndpoints
+    - 'true'
+
+  CreateSSMEndpoint: !Equals
+    - !Ref EnableSSMEndpoint
+    - 'true'
+
+  CreateCloudWatchLogsEndpoint: !Equals
+    - !Ref EnableCloudWatchLogsEndpoint
+    - 'true'
+
+  CreateSecretsManagerEndpoint: !Equals
+    - !Ref EnableSecretsManagerEndpoint
+    - 'true'
+
+  CreateSNSEndpoint: !Equals
+    - !Ref EnableSNSEndpoint
+    - 'true'
+
+  CreateEventBridgeEndpoint: !Equals
+    - !Ref EnableEventBridgeEndpoint
+    - 'true'
+
+  CreateStepFunctionsEndpoint: !Equals
+    - !Ref EnableStepFunctionsEndpoint
+    - 'true'
+
+  CreateSQSEndpoint: !Equals
+    - !Ref EnableSQSEndpoint
+    - 'true'
+
+  CreateXRayEndpoint: !Equals
+    - !Ref EnableXRayEndpoint
+    - 'true'
+
+  CreateMonitoringEndpoint: !Equals
+    - !Ref EnableMonitoringEndpoint
+    - 'true'
+
+  CreateSchedulerEndpoint: !Equals
+    - !Ref EnableSchedulerEndpoint
+    - 'true'
+
+  CreateAnyInterfaceEndpoint: !Or
+    - !Condition CreateSSMEndpoint
+    - !Condition CreateCloudWatchLogsEndpoint
+    - !Condition CreateSecretsManagerEndpoint
+    - !Condition CreateSNSEndpoint
+    - !Condition CreateEventBridgeEndpoint
+    - !Condition CreateStepFunctionsEndpoint
+    - !Condition CreateSQSEndpoint
+    - !Condition CreateXRayEndpoint
+    - !Condition CreateMonitoringEndpoint
+    - !Condition CreateSchedulerEndpoint
 
 Resources:
 
@@ -115,6 +236,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-vpc
+        - Key: Project
+          Value: medislot
         - Key: Environment
           Value: !Ref Environment
 
@@ -124,6 +247,10 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-igw
+        - Key: Project
+          Value: medislot
+        - Key: Environment
+          Value: !Ref Environment
 
   AttachInternetGateway:
     Type: AWS::EC2::VPCGatewayAttachment
@@ -147,6 +274,8 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-public-subnet
+        - Key: Project
+          Value: medislot
         - Key: Environment
           Value: !Ref Environment
 
@@ -157,6 +286,10 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-public-rt
+        - Key: Project
+          Value: medislot
+        - Key: Environment
+          Value: !Ref Environment
 
   PublicDefaultRoute:
     Type: AWS::EC2::Route
@@ -188,6 +321,10 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-lambda-private-az1
+        - Key: Project
+          Value: medislot
+        - Key: Environment
+          Value: !Ref Environment
 
   PrivateLambdaSubnetAZ2:
     Type: AWS::EC2::Subnet
@@ -201,6 +338,10 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-lambda-private-az2
+        - Key: Project
+          Value: medislot
+        - Key: Environment
+          Value: !Ref Environment
 
   PrivateLambdaRouteTableAZ1:
     Type: AWS::EC2::RouteTable
@@ -209,6 +350,10 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-lambda-private-rt-az1
+        - Key: Project
+          Value: medislot
+        - Key: Environment
+          Value: !Ref Environment
 
   PrivateLambdaRouteTableAZ2:
     Type: AWS::EC2::RouteTable
@@ -217,6 +362,10 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-lambda-private-rt-az2
+        - Key: Project
+          Value: medislot
+        - Key: Environment
+          Value: !Ref Environment
 
   PrivateLambdaSubnetAssociationAZ1:
     Type: AWS::EC2::SubnetRouteTableAssociation
@@ -231,7 +380,7 @@ Resources:
       RouteTableId: !Ref PrivateLambdaRouteTableAZ2
 
   # --------------------------------------------------
-  # 4. Private subnets for RDS MySQL
+  # 4. Private subnets for RDS MySQL (no internet route, no endpoints)
   # --------------------------------------------------
 
   PrivateRDSSubnetAZ1:
@@ -246,6 +395,10 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-rds-private-az1
+        - Key: Project
+          Value: medislot
+        - Key: Environment
+          Value: !Ref Environment
 
   PrivateRDSSubnetAZ2:
     Type: AWS::EC2::Subnet
@@ -259,6 +412,10 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-rds-private-az2
+        - Key: Project
+          Value: medislot
+        - Key: Environment
+          Value: !Ref Environment
 
   PrivateRDSRouteTableAZ1:
     Type: AWS::EC2::RouteTable
@@ -267,6 +424,10 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-rds-private-rt-az1
+        - Key: Project
+          Value: medislot
+        - Key: Environment
+          Value: !Ref Environment
 
   PrivateRDSRouteTableAZ2:
     Type: AWS::EC2::RouteTable
@@ -275,6 +436,10 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-rds-private-rt-az2
+        - Key: Project
+          Value: medislot
+        - Key: Environment
+          Value: !Ref Environment
 
   PrivateRDSSubnetAssociationAZ1:
     Type: AWS::EC2::SubnetRouteTableAssociation
@@ -292,6 +457,8 @@ Resources:
   # 5. Security groups
   # --------------------------------------------------
 
+  # The Flask web app is a pure API client: it talks only to the public API
+  # Gateway endpoint and S3 over HTTPS. It has no path to RDS.
   EC2SecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
@@ -303,26 +470,51 @@ Resources:
           FromPort: 80
           ToPort: 80
           CidrIp: 0.0.0.0/0
+        - Description: SSH only from the operator-supplied public IP range
+          IpProtocol: tcp
+          FromPort: 22
+          ToPort: 22
+          CidrIp: !Ref SSHAllowedCidr
+      SecurityGroupEgress:
+        - Description: HTTPS to API Gateway, S3 and OS/package repositories
+          IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-ec2-sg
+        - Key: Project
+          Value: medislot
+        - Key: Environment
+          Value: !Ref Environment
 
   LambdaSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
       GroupDescription: Network access for VPC-connected MediSlot Lambdas
       VpcId: !Ref MediSlotVPC
+      # Intended to remove the default allow-all egress rule; the standalone
+      # egress resources below define the permitted destinations and ports.
+      # VERIFY after deploy: aws ec2 describe-security-groups --group-ids <id>
+      # must show no 0.0.0.0/0 all-protocol egress rule.
+      SecurityGroupEgress: []
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-lambda-sg
+        - Key: Project
+          Value: medislot
+        - Key: Environment
+          Value: !Ref Environment
 
+  # MySQL is reachable from the Lambda security group only.
   RDSSecurityGroup:
     Type: AWS::EC2::SecurityGroup
     Properties:
-      GroupDescription: Allow MySQL only from the Lambda security group
+      GroupDescription: Allow MySQL from the MediSlot Lambda security group only
       VpcId: !Ref MediSlotVPC
       SecurityGroupIngress:
-        - Description: MySQL from MediSlot Lambda functions only
+        - Description: MySQL from MediSlot Lambda functions
           IpProtocol: tcp
           FromPort: 3306
           ToPort: 3306
@@ -330,6 +522,10 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-rds-sg
+        - Key: Project
+          Value: medislot
+        - Key: Environment
+          Value: !Ref Environment
 
   LambdaToRDSEgress:
     Type: AWS::EC2::SecurityGroupEgress
@@ -351,8 +547,19 @@ Resources:
       ToPort: 443
       DestinationPrefixListId: !Ref DynamoDBPrefixListId
 
+  LambdaToS3Egress:
+    Type: AWS::EC2::SecurityGroupEgress
+    Properties:
+      GroupId: !Ref LambdaSecurityGroup
+      Description: HTTPS access to S3 Gateway VPC endpoint
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      DestinationPrefixListId: !Ref S3PrefixListId
+
   # --------------------------------------------------
   # 6. Gateway VPC endpoints (no hourly endpoint charge)
+  #    Attached to Lambda route tables only. RDS subnets get no endpoints.
   # --------------------------------------------------
 
   DynamoDBGatewayEndpoint:
@@ -364,9 +571,6 @@ Resources:
       RouteTableIds:
         - !Ref PrivateLambdaRouteTableAZ1
         - !Ref PrivateLambdaRouteTableAZ2
-      Tags:
-        - Key: Name
-          Value: !Sub medislot-${Environment}-dynamodb-endpoint
 
   S3GatewayEndpoint:
     Type: AWS::EC2::VPCEndpoint
@@ -377,11 +581,6 @@ Resources:
       RouteTableIds:
         - !Ref PrivateLambdaRouteTableAZ1
         - !Ref PrivateLambdaRouteTableAZ2
-        - !Ref PrivateRDSRouteTableAZ1
-        - !Ref PrivateRDSRouteTableAZ2
-      Tags:
-        - Key: Name
-          Value: !Sub medislot-${Environment}-s3-endpoint
 
   # --------------------------------------------------
   # 7. Interface endpoint security group
@@ -402,6 +601,10 @@ Resources:
       Tags:
         - Key: Name
           Value: !Sub medislot-${Environment}-vpce-sg
+        - Key: Project
+          Value: medislot
+        - Key: Environment
+          Value: !Ref Environment
 
   LambdaToVPCEndpointEgress:
     Type: AWS::EC2::SecurityGroupEgress
@@ -416,6 +619,8 @@ Resources:
 
   # --------------------------------------------------
   # 8. Optional paid interface endpoints
+  #    Billed per endpoint per AZ per hour. Enable only what the current
+  #    milestone needs and tear down idle environments.
   # --------------------------------------------------
 
   SSMInterfaceEndpoint:
@@ -426,11 +631,19 @@ Resources:
       VpcEndpointType: Interface
       ServiceName: !Sub com.amazonaws.${AWS::Region}.ssm
       PrivateDnsEnabled: true
-      SubnetIds:
-        - !Ref PrivateLambdaSubnetAZ1
-        - !Ref PrivateLambdaSubnetAZ2
+      SubnetIds: !If
+        - SingleAZEndpoints
+        - [!Ref PrivateLambdaSubnetAZ1]
+        - [!Ref PrivateLambdaSubnetAZ1, !Ref PrivateLambdaSubnetAZ2]
       SecurityGroupIds:
         - !Ref VPCEndpointSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-${Environment}-ssm-endpoint
+        - Key: Project
+          Value: medislot
+        - Key: Environment
+          Value: !Ref Environment
 
   CloudWatchLogsInterfaceEndpoint:
     Type: AWS::EC2::VPCEndpoint
@@ -440,11 +653,19 @@ Resources:
       VpcEndpointType: Interface
       ServiceName: !Sub com.amazonaws.${AWS::Region}.logs
       PrivateDnsEnabled: true
-      SubnetIds:
-        - !Ref PrivateLambdaSubnetAZ1
-        - !Ref PrivateLambdaSubnetAZ2
+      SubnetIds: !If
+        - SingleAZEndpoints
+        - [!Ref PrivateLambdaSubnetAZ1]
+        - [!Ref PrivateLambdaSubnetAZ1, !Ref PrivateLambdaSubnetAZ2]
       SecurityGroupIds:
         - !Ref VPCEndpointSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-${Environment}-logs-endpoint
+        - Key: Project
+          Value: medislot
+        - Key: Environment
+          Value: !Ref Environment
 
   SecretsManagerInterfaceEndpoint:
     Type: AWS::EC2::VPCEndpoint
@@ -454,11 +675,19 @@ Resources:
       VpcEndpointType: Interface
       ServiceName: !Sub com.amazonaws.${AWS::Region}.secretsmanager
       PrivateDnsEnabled: true
-      SubnetIds:
-        - !Ref PrivateLambdaSubnetAZ1
-        - !Ref PrivateLambdaSubnetAZ2
+      SubnetIds: !If
+        - SingleAZEndpoints
+        - [!Ref PrivateLambdaSubnetAZ1]
+        - [!Ref PrivateLambdaSubnetAZ1, !Ref PrivateLambdaSubnetAZ2]
       SecurityGroupIds:
         - !Ref VPCEndpointSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-${Environment}-secretsmanager-endpoint
+        - Key: Project
+          Value: medislot
+        - Key: Environment
+          Value: !Ref Environment
 
   SNSInterfaceEndpoint:
     Type: AWS::EC2::VPCEndpoint
@@ -468,11 +697,19 @@ Resources:
       VpcEndpointType: Interface
       ServiceName: !Sub com.amazonaws.${AWS::Region}.sns
       PrivateDnsEnabled: true
-      SubnetIds:
-        - !Ref PrivateLambdaSubnetAZ1
-        - !Ref PrivateLambdaSubnetAZ2
+      SubnetIds: !If
+        - SingleAZEndpoints
+        - [!Ref PrivateLambdaSubnetAZ1]
+        - [!Ref PrivateLambdaSubnetAZ1, !Ref PrivateLambdaSubnetAZ2]
       SecurityGroupIds:
         - !Ref VPCEndpointSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-${Environment}-sns-endpoint
+        - Key: Project
+          Value: medislot
+        - Key: Environment
+          Value: !Ref Environment
 
   EventBridgeInterfaceEndpoint:
     Type: AWS::EC2::VPCEndpoint
@@ -482,11 +719,19 @@ Resources:
       VpcEndpointType: Interface
       ServiceName: !Sub com.amazonaws.${AWS::Region}.events
       PrivateDnsEnabled: true
-      SubnetIds:
-        - !Ref PrivateLambdaSubnetAZ1
-        - !Ref PrivateLambdaSubnetAZ2
+      SubnetIds: !If
+        - SingleAZEndpoints
+        - [!Ref PrivateLambdaSubnetAZ1]
+        - [!Ref PrivateLambdaSubnetAZ1, !Ref PrivateLambdaSubnetAZ2]
       SecurityGroupIds:
         - !Ref VPCEndpointSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-${Environment}-events-endpoint
+        - Key: Project
+          Value: medislot
+        - Key: Environment
+          Value: !Ref Environment
 
   StepFunctionsInterfaceEndpoint:
     Type: AWS::EC2::VPCEndpoint
@@ -496,44 +741,107 @@ Resources:
       VpcEndpointType: Interface
       ServiceName: !Sub com.amazonaws.${AWS::Region}.states
       PrivateDnsEnabled: true
-      SubnetIds:
-        - !Ref PrivateLambdaSubnetAZ1
-        - !Ref PrivateLambdaSubnetAZ2
+      SubnetIds: !If
+        - SingleAZEndpoints
+        - [!Ref PrivateLambdaSubnetAZ1]
+        - [!Ref PrivateLambdaSubnetAZ1, !Ref PrivateLambdaSubnetAZ2]
       SecurityGroupIds:
         - !Ref VPCEndpointSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-${Environment}-states-endpoint
+        - Key: Project
+          Value: medislot
+        - Key: Environment
+          Value: !Ref Environment
 
-Conditions:
-  CreateSSMEndpoint: !Equals
-    - !Ref EnableSSMEndpoint
-    - 'true'
+  SQSInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: CreateSQSEndpoint
+    Properties:
+      VpcId: !Ref MediSlotVPC
+      VpcEndpointType: Interface
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.sqs
+      PrivateDnsEnabled: true
+      SubnetIds: !If
+        - SingleAZEndpoints
+        - [!Ref PrivateLambdaSubnetAZ1]
+        - [!Ref PrivateLambdaSubnetAZ1, !Ref PrivateLambdaSubnetAZ2]
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-${Environment}-sqs-endpoint
+        - Key: Project
+          Value: medislot
+        - Key: Environment
+          Value: !Ref Environment
 
-  CreateCloudWatchLogsEndpoint: !Equals
-    - !Ref EnableCloudWatchLogsEndpoint
-    - 'true'
+  XRayInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: CreateXRayEndpoint
+    Properties:
+      VpcId: !Ref MediSlotVPC
+      VpcEndpointType: Interface
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.xray
+      PrivateDnsEnabled: true
+      SubnetIds: !If
+        - SingleAZEndpoints
+        - [!Ref PrivateLambdaSubnetAZ1]
+        - [!Ref PrivateLambdaSubnetAZ1, !Ref PrivateLambdaSubnetAZ2]
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-${Environment}-xray-endpoint
+        - Key: Project
+          Value: medislot
+        - Key: Environment
+          Value: !Ref Environment
 
-  CreateSecretsManagerEndpoint: !Equals
-    - !Ref EnableSecretsManagerEndpoint
-    - 'true'
+  MonitoringInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: CreateMonitoringEndpoint
+    Properties:
+      VpcId: !Ref MediSlotVPC
+      VpcEndpointType: Interface
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.monitoring
+      PrivateDnsEnabled: true
+      SubnetIds: !If
+        - SingleAZEndpoints
+        - [!Ref PrivateLambdaSubnetAZ1]
+        - [!Ref PrivateLambdaSubnetAZ1, !Ref PrivateLambdaSubnetAZ2]
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-${Environment}-monitoring-endpoint
+        - Key: Project
+          Value: medislot
+        - Key: Environment
+          Value: !Ref Environment
 
-  CreateSNSEndpoint: !Equals
-    - !Ref EnableSNSEndpoint
-    - 'true'
-
-  CreateEventBridgeEndpoint: !Equals
-    - !Ref EnableEventBridgeEndpoint
-    - 'true'
-
-  CreateStepFunctionsEndpoint: !Equals
-    - !Ref EnableStepFunctionsEndpoint
-    - 'true'
-
-  CreateAnyInterfaceEndpoint: !Or
-    - !Condition CreateSSMEndpoint
-    - !Condition CreateCloudWatchLogsEndpoint
-    - !Condition CreateSecretsManagerEndpoint
-    - !Condition CreateSNSEndpoint
-    - !Condition CreateEventBridgeEndpoint
-    - !Condition CreateStepFunctionsEndpoint
+  SchedulerInterfaceEndpoint:
+    Type: AWS::EC2::VPCEndpoint
+    Condition: CreateSchedulerEndpoint
+    Properties:
+      VpcId: !Ref MediSlotVPC
+      VpcEndpointType: Interface
+      ServiceName: !Sub com.amazonaws.${AWS::Region}.scheduler
+      PrivateDnsEnabled: true
+      SubnetIds: !If
+        - SingleAZEndpoints
+        - [!Ref PrivateLambdaSubnetAZ1]
+        - [!Ref PrivateLambdaSubnetAZ1, !Ref PrivateLambdaSubnetAZ2]
+      SecurityGroupIds:
+        - !Ref VPCEndpointSecurityGroup
+      Tags:
+        - Key: Name
+          Value: !Sub medislot-${Environment}-scheduler-endpoint
+        - Key: Project
+          Value: medislot
+        - Key: Environment
+          Value: !Ref Environment
 
 Outputs:
 
@@ -574,7 +882,7 @@ Outputs:
       Name: !Sub medislot-${Environment}-rds-subnet-az2-id
 
   EC2SecurityGroupId:
-    Description: EC2 security group; HTTP only, no database access
+    Description: EC2 security group; HTTP ingress, HTTPS-only egress, no database access
     Value: !Ref EC2SecurityGroup
     Export:
       Name: !Sub medislot-${Environment}-ec2-sg-id
@@ -586,7 +894,7 @@ Outputs:
       Name: !Sub medislot-${Environment}-lambda-sg-id
 
   RDSSecurityGroupId:
-    Description: RDS security group; MySQL ingress from Lambda SG only
+    Description: RDS security group; MySQL ingress from the Lambda SG only
     Value: !Ref RDSSecurityGroup
     Export:
       Name: !Sub medislot-${Environment}-rds-sg-id

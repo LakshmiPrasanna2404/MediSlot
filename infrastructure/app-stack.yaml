@@ -1,7 +1,7 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  MediSlot application stack. Hosts the doctor and patient application API,
-  public authentication entry points, and protected routes using the existing JWT Lambda authorizer.
+  MediSlot application stack. Adds doctor and patient application Lambda routes
+  and the JWT Lambda authorizer to the shared API created by api-stack.
 
 Parameters:
   Environment:
@@ -57,46 +57,6 @@ Parameters:
       - 60
       - 90
 
-  CorsAllowedOrigins:
-    Type: CommaDelimitedList
-    Default: ''
-    Description: >-
-      Comma-separated browser origins allowed to call the API, for example
-      https://app.example.com. Leave empty if no browser calls the API directly.
-      When set, API Gateway answers CORS preflight (OPTIONS) requests itself,
-      before the JWT authorizer runs.
-
-  ThrottleRateLimit:
-    Type: Number
-    Default: 100
-    MinValue: 1
-    Description: Steady-state requests per second allowed on every route.
-
-  ThrottleBurstLimit:
-    Type: Number
-    Default: 200
-    MinValue: 1
-    Description: Burst requests allowed on every route.
-
-  AuthThrottleRateLimit:
-    Type: Number
-    Default: 20
-    MinValue: 1
-    Description: >-
-      Requests per second allowed on register and login. These are public and
-      run bcrypt, so they are capped lower to limit brute-force and cost abuse.
-
-  AuthThrottleBurstLimit:
-    Type: Number
-    Default: 40
-    MinValue: 1
-    Description: Burst requests allowed on register and login.
-
-Conditions:
-  HasCorsOrigins: !Not
-    - !Equals
-      - !Join ['', !Ref CorsAllowedOrigins]
-      - ''
 
 Resources:
   # ---------------------------------------------------------
@@ -181,55 +141,18 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # ---------------------------------------------------------
-  # HTTP API
-  # ---------------------------------------------------------
-  AppHttpApi:
-    Type: AWS::ApiGatewayV2::Api
-    Properties:
-      Name: !Sub medislot-${Environment}-app-api
-      Description: MediSlot doctor and patient application API
-      ProtocolType: HTTP
-      CorsConfiguration: !If
-        - HasCorsOrigins
-        - AllowOrigins: !Ref CorsAllowedOrigins
-          AllowMethods:
-            - GET
-            - POST
-            - PUT
-            - PATCH
-            - DELETE
-            - OPTIONS
-          AllowHeaders:
-            - Authorization
-            - Content-Type
-          MaxAge: 3600
-        - !Ref AWS::NoValue
-      Tags:
-        Project: MediSlot
-        Environment: !Ref Environment
+  # Shared HTTP API is created by api-stack; this stack adds application routes.
 
   # Protected application Lambda integration
   AppApiIntegration:
     Type: AWS::ApiGatewayV2::Integration
     Properties:
-      ApiId: !Ref AppHttpApi
+      ApiId:
+        Fn::ImportValue:
+          Fn::Sub: medislot-${Environment}-api-id
       IntegrationType: AWS_PROXY
       IntegrationMethod: POST
       IntegrationUri: !GetAtt AppFunction.Arn
-      PayloadFormatVersion: '2.0'
-      TimeoutInMillis: 30000
-
-  # Existing authentication Lambda integration
-  AuthApiIntegration:
-    Type: AWS::ApiGatewayV2::Integration
-    Properties:
-      ApiId: !Ref AppHttpApi
-      IntegrationType: AWS_PROXY
-      IntegrationMethod: POST
-      IntegrationUri:
-        Fn::ImportValue:
-          Fn::Sub: medislot-${Environment}-auth-function-arn
       PayloadFormatVersion: '2.0'
       TimeoutInMillis: 30000
 
@@ -237,7 +160,9 @@ Resources:
   AppJwtAuthorizer:
     Type: AWS::ApiGatewayV2::Authorizer
     Properties:
-      ApiId: !Ref AppHttpApi
+      ApiId:
+        Fn::ImportValue:
+          Fn::Sub: medislot-${Environment}-api-id
       Name: !Sub medislot-${Environment}-jwt-authorizer
       AuthorizerType: REQUEST
       AuthorizerUri:
@@ -252,62 +177,6 @@ Resources:
       EnableSimpleResponses: false
       AuthorizerResultTtlInSeconds: 0
 
-  # ---------------------------------------------------------
-  # Public authentication routes
-  # ---------------------------------------------------------
-  AuthDoctorRegisterRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref AppHttpApi
-      RouteKey: 'POST /auth/doctors/register'
-      Target: !Sub integrations/${AuthApiIntegration}
-      AuthorizationType: NONE
-
-  AuthDoctorLoginRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref AppHttpApi
-      RouteKey: 'POST /auth/doctors/login'
-      Target: !Sub integrations/${AuthApiIntegration}
-      AuthorizationType: NONE
-
-  AuthPatientRegisterRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref AppHttpApi
-      RouteKey: 'POST /auth/patients/register'
-      Target: !Sub integrations/${AuthApiIntegration}
-      AuthorizationType: NONE
-
-  AuthPatientLoginRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref AppHttpApi
-      RouteKey: 'POST /auth/patients/login'
-      Target: !Sub integrations/${AuthApiIntegration}
-      AuthorizationType: NONE
-
-  AuthRefreshRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref AppHttpApi
-      RouteKey: 'POST /auth/refresh'
-      Target: !Sub integrations/${AuthApiIntegration}
-      AuthorizationType: NONE
-
-  # ---------------------------------------------------------
-  # Protected authentication route
-  # ---------------------------------------------------------
-  AuthLogoutRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref AppHttpApi
-      RouteKey: 'POST /auth/logout'
-      Target: !Sub integrations/${AuthApiIntegration}
-      # Logout is authenticated by the refresh token itself, sent in the JSON
-      # body or as the Bearer value. An access token is optional. Do not attach
-      # the access-token authorizer to this route.
-      AuthorizationType: NONE
 
   # ---------------------------------------------------------
   # Protected application routes
@@ -315,11 +184,44 @@ Resources:
   AppDefaultRoute:
     Type: AWS::ApiGatewayV2::Route
     Properties:
-      ApiId: !Ref AppHttpApi
+      ApiId:
+        Fn::ImportValue:
+          Fn::Sub: medislot-${Environment}-api-id
       RouteKey: '$default'
       Target: !Sub integrations/${AppApiIntegration}
       AuthorizationType: CUSTOM
       AuthorizerId: !Ref AppJwtAuthorizer
+
+  # Public doctor discovery routes override the protected $default route.
+  PublicDoctorsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId:
+        Fn::ImportValue:
+          Fn::Sub: medislot-${Environment}-api-id
+      RouteKey: 'GET /doctors'
+      Target: !Sub integrations/${AppApiIntegration}
+      AuthorizationType: NONE
+
+  PublicDoctorProfileRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId:
+        Fn::ImportValue:
+          Fn::Sub: medislot-${Environment}-api-id
+      RouteKey: 'GET /doctors/{doctorId}'
+      Target: !Sub integrations/${AppApiIntegration}
+      AuthorizationType: NONE
+
+  PublicDoctorSlotsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId:
+        Fn::ImportValue:
+          Fn::Sub: medislot-${Environment}-api-id
+      RouteKey: 'GET /doctors/{doctorId}/slots'
+      Target: !Sub integrations/${AppApiIntegration}
+      AuthorizationType: NONE
 
   # ---------------------------------------------------------
   # Lambda invocation permissions
@@ -332,19 +234,10 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub
         - arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/*
-        - ApiId: !Ref AppHttpApi
+        - ApiId:
+            Fn::ImportValue:
+              Fn::Sub: medislot-${Environment}-api-id
 
-  AuthApiInvokePermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName:
-        Fn::ImportValue:
-          Fn::Sub: medislot-${Environment}-auth-function-arn
-      Action: lambda:InvokeFunction
-      Principal: apigateway.amazonaws.com
-      SourceArn: !Sub
-        - arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/*
-        - ApiId: !Ref AppHttpApi
 
   AppAuthorizerInvokePermission:
     Type: AWS::Lambda::Permission
@@ -356,43 +249,11 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub
         - arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/authorizers/${AuthorizerId}
-        - ApiId: !Ref AppHttpApi
+        - ApiId:
+            Fn::ImportValue:
+              Fn::Sub: medislot-${Environment}-api-id
           AuthorizerId: !Ref AppJwtAuthorizer
 
-  # ---------------------------------------------------------
-  # Default API stage
-  # ---------------------------------------------------------
-  AppApiStage:
-    Type: AWS::ApiGatewayV2::Stage
-    # Route settings can only be applied once their routes exist.
-    DependsOn:
-      - AuthDoctorRegisterRoute
-      - AuthDoctorLoginRoute
-      - AuthPatientRegisterRoute
-      - AuthPatientLoginRoute
-    Properties:
-      ApiId: !Ref AppHttpApi
-      StageName: '$default'
-      AutoDeploy: true
-      DefaultRouteSettings:
-        ThrottlingRateLimit: !Ref ThrottleRateLimit
-        ThrottlingBurstLimit: !Ref ThrottleBurstLimit
-      RouteSettings:
-        'POST /auth/doctors/register':
-          ThrottlingRateLimit: !Ref AuthThrottleRateLimit
-          ThrottlingBurstLimit: !Ref AuthThrottleBurstLimit
-        'POST /auth/doctors/login':
-          ThrottlingRateLimit: !Ref AuthThrottleRateLimit
-          ThrottlingBurstLimit: !Ref AuthThrottleBurstLimit
-        'POST /auth/patients/register':
-          ThrottlingRateLimit: !Ref AuthThrottleRateLimit
-          ThrottlingBurstLimit: !Ref AuthThrottleBurstLimit
-        'POST /auth/patients/login':
-          ThrottlingRateLimit: !Ref AuthThrottleRateLimit
-          ThrottlingBurstLimit: !Ref AuthThrottleBurstLimit
-      Tags:
-        Project: MediSlot
-        Environment: !Ref Environment
 
 Outputs:
   AppFunctionName:
@@ -408,13 +269,17 @@ Outputs:
       Name: !Sub medislot-${Environment}-app-function-arn
 
   AppApiUrl:
-    Description: Base URL for the doctor and patient application API
-    Value: !GetAtt AppHttpApi.ApiEndpoint
+    Description: Base URL for the shared doctor and patient API
+    Value:
+      Fn::ImportValue:
+        Fn::Sub: medislot-${Environment}-api-url
     Export:
       Name: !Sub medislot-${Environment}-app-api-url
 
   AppApiId:
-    Description: Application API Gateway ID
-    Value: !Ref AppHttpApi
+    Description: Shared API Gateway ID
+    Value:
+      Fn::ImportValue:
+        Fn::Sub: medislot-${Environment}-api-id
     Export:
       Name: !Sub medislot-${Environment}-app-api-id

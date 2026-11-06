@@ -1,5 +1,5 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: MediSlot HTTP API Gateway for doctor and patient authentication endpoints.
+Description: MediSlot shared HTTP API. Owns the API Gateway, authentication routes, CORS and default stage; application routes are added by app-stack.
 
 Parameters:
   Environment:
@@ -54,14 +54,18 @@ Resources:
   AuthHttpApi:
     Type: AWS::ApiGatewayV2::Api
     Properties:
-      Name: !Sub medislot-${Environment}-auth-api
-      Description: MediSlot authentication API
+      Name: !Sub medislot-${Environment}-api
+      Description: MediSlot shared doctor and patient API
       ProtocolType: HTTP
       CorsConfiguration: !If
         - HasCorsOrigins
         - AllowOrigins: !Ref CorsAllowedOrigins
           AllowMethods:
+            - GET
             - POST
+            - PUT
+            - PATCH
+            - DELETE
             - OPTIONS
           AllowHeaders:
             - Authorization
@@ -155,6 +159,8 @@ Resources:
       - DoctorLoginRoute
       - PatientRegisterRoute
       - PatientLoginRoute
+      - RefreshRoute
+      - LogoutRoute
     Properties:
       ApiId: !Ref AuthHttpApi
       StageName: '$default'
@@ -180,14 +186,14 @@ Resources:
         Environment: !Ref Environment
 
 Outputs:
-  AuthApiUrl:
-    Description: Base URL for authentication requests
+  ApiUrl:
+    Description: Base URL for the shared MediSlot API
     Value: !GetAtt AuthHttpApi.ApiEndpoint
     Export:
-      Name: !Sub medislot-${Environment}-auth-api-url
+      Name: !Sub medislot-${Environment}-api-url
 
-  AuthApiId:
-    Description: Authentication API Gateway ID
+  ApiId:
+    Description: Shared API Gateway ID
     Value: !Ref AuthHttpApi
     Export:
-      Name: !Sub medislot-${Environment}-auth-api-id
+      Name: !Sub medislot-${Environment}-api-id

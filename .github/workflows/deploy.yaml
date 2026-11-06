@@ -66,6 +66,7 @@ jobs:
             infrastructure/data-stack.yaml \
             infrastructure/iam-stack.yaml \
             infrastructure/auth-stack.yaml \
+            infrastructure/api-stack.yaml \
             infrastructure/app-stack.yaml \
             lambda/auth/auth_handler.py \
             lambda/auth/requirements.txt \
@@ -86,6 +87,7 @@ jobs:
             infrastructure/data-stack.yaml \
             infrastructure/iam-stack.yaml \
             infrastructure/auth-stack.yaml \
+            infrastructure/api-stack.yaml \
             infrastructure/app-stack.yaml
 
           cfn-lint --non-zero-exit-code error \
@@ -93,6 +95,7 @@ jobs:
             infrastructure/data-stack.yaml \
             infrastructure/iam-stack.yaml \
             infrastructure/auth-stack.yaml \
+            infrastructure/api-stack.yaml \
             infrastructure/app-stack.yaml
 
       - uses: aws-actions/configure-aws-credentials@v4
@@ -113,6 +116,7 @@ jobs:
             infrastructure/data-stack.yaml \
             infrastructure/iam-stack.yaml \
             infrastructure/auth-stack.yaml \
+            infrastructure/api-stack.yaml \
             infrastructure/app-stack.yaml
           do
             echo "Validating $template"
@@ -377,11 +381,86 @@ jobs:
             --query 'Stacks[0].Outputs' \
             --output table
 
-  # 6. DOCTOR APP LAMBDA AND API
-  deploy-app:
-    name: Deploy App Lambda and API
+  # 6. SHARED HTTP API AND AUTHENTICATION ROUTES
+  deploy-api:
+    name: Deploy Shared HTTP API
     runs-on: ubuntu-latest
     needs: deploy-auth
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Read CloudFormation execution role
+        id: deployment
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          EXECUTION_ROLE=$(aws cloudformation describe-stacks \
+            --stack-name "medislot-${ENVIRONMENT}-iam" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='CloudFormationExecutionRoleArn'].OutputValue | [0]" \
+            --output text)
+
+          [[ -n "$EXECUTION_ROLE" && "$EXECUTION_ROLE" != "None" ]] || {
+            echo "::error::CloudFormationExecutionRoleArn output missing"
+            exit 1
+          }
+
+          echo "execution_role=$EXECUTION_ROLE" >> "$GITHUB_OUTPUT"
+
+      - name: Validate shared API template
+        run: |
+          set -euo pipefail
+          aws cloudformation validate-template \
+            --template-body file://infrastructure/api-stack.yaml \
+            --region "$AWS_REGION" >/dev/null
+
+      - name: Deploy shared API
+        run: |
+          set -euo pipefail
+          aws cloudformation deploy \
+            --stack-name "medislot-${ENVIRONMENT}-api" \
+            --template-file infrastructure/api-stack.yaml \
+            --role-arn "${{ steps.deployment.outputs.execution_role }}" \
+            --parameter-overrides Environment="${ENVIRONMENT}" \
+            --no-fail-on-empty-changeset \
+            --region "$AWS_REGION"
+
+      - name: Verify shared API stack
+        shell: bash
+        run: |
+          set -euo pipefail
+          STATUS=$(aws cloudformation describe-stacks \
+            --stack-name "medislot-${ENVIRONMENT}-api" \
+            --region "$AWS_REGION" \
+            --query 'Stacks[0].StackStatus' --output text)
+
+          echo "Shared API stack status: $STATUS"
+          [[ "$STATUS" == "CREATE_COMPLETE" || "$STATUS" == "UPDATE_COMPLETE" ]]
+
+          API_URL=$(aws cloudformation describe-stacks \
+            --stack-name "medislot-${ENVIRONMENT}-api" \
+            --region "$AWS_REGION" \
+            --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue | [0]" \
+            --output text)
+
+          [[ -n "$API_URL" && "$API_URL" != "None" ]] || {
+            echo "::error::ApiUrl output is missing"
+            exit 1
+          }
+          echo "MediSlot shared API URL: $API_URL"
+
+  # 7. DOCTOR AND PATIENT APP LAMBDA ROUTES
+  deploy-app:
+    name: Deploy App Lambda and Routes
+    runs-on: ubuntu-latest
+    needs: deploy-api
 
     steps:
       - uses: actions/checkout@v4
@@ -453,13 +532,13 @@ jobs:
             "s3://${{ steps.deployment.outputs.bucket }}/medislot/${ENVIRONMENT}/app/app-${GITHUB_SHA}.zip" \
             --region "$AWS_REGION"
 
-      - name: Deploy App and API
+      - name: Deploy App Lambda and Routes
         shell: bash
         run: |
           set -euo pipefail
 
           aws cloudformation deploy \
-            --stack-name "medislot-${ENVIRONMENT}-api" \
+            --stack-name "medislot-${ENVIRONMENT}-app" \
             --template-file infrastructure/app-stack.yaml \
             --role-arn "${{ steps.deployment.outputs.execution_role }}" \
             --parameter-overrides \
@@ -480,7 +559,7 @@ jobs:
       - name: Verify API outputs
         run: |
           aws cloudformation describe-stacks \
-            --stack-name "medislot-${ENVIRONMENT}-api" \
+            --stack-name "medislot-${ENVIRONMENT}-app" \
             --region "$AWS_REGION" \
             --query 'Stacks[0].Outputs' \
             --output table
@@ -491,7 +570,7 @@ jobs:
           set -euo pipefail
 
           API_URL=$(aws cloudformation describe-stacks \
-            --stack-name "medislot-${ENVIRONMENT}-api" \
+            --stack-name "medislot-${ENVIRONMENT}-app" \
             --region "$AWS_REGION" \
             --query "Stacks[0].Outputs[?OutputKey=='AppApiUrl'].OutputValue | [0]" \
             --output text)
