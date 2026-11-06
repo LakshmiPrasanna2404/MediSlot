@@ -83,7 +83,7 @@ Resources:
       StorageType: gp3
 
       # Encrypt RDS storage with the AWS-managed default KMS key.
-      StorageEncrypted: true
+      StorageEncrypted: false
 
       PubliclyAccessible: false
       # The approved MediSlot schema specifies a single-AZ RDS instance.
