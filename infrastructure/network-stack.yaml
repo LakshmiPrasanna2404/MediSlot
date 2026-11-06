@@ -41,6 +41,17 @@ Parameters:
     Default: 10.0.5.0/24
     Description: CIDR block for the second private RDS subnet.
 
+  DynamoDBPrefixListId:
+    Type: String
+    Default: pl-02cd2c6b
+    AllowedPattern: '^pl-[0-9a-f]{8,17}$'
+    ConstraintDescription: Must be a managed prefix list ID such as pl-02cd2c6b.
+    Description: >-
+      Managed prefix list ID of the DynamoDB service in the deployment region.
+      The default is the us-east-1 value. For any other region, look it up with
+      aws ec2 describe-managed-prefix-lists --filters
+      Name=prefix-list-name,Values=com.amazonaws.REGION.dynamodb
+
   EnableSSMEndpoint:
     Type: String
     Description: Create the SSM interface endpoint for private Lambda access to Parameter Store.
@@ -338,7 +349,7 @@ Resources:
       IpProtocol: tcp
       FromPort: 443
       ToPort: 443
-      DestinationPrefixListId: pl-02cd2c6b
+      DestinationPrefixListId: !Ref DynamoDBPrefixListId
 
   # --------------------------------------------------
   # 6. Gateway VPC endpoints (no hourly endpoint charge)

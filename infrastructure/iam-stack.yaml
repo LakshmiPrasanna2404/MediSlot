@@ -1,4 +1,3 @@
-
 AWSTemplateFormatVersion: '2010-09-09'
 Description: MediSlot environment-specific IAM roles and least-privilege execution policies
 
@@ -97,7 +96,6 @@ Resources:
                   - dynamodb:PutItem
                   - dynamodb:DeleteItem
                   - dynamodb:UpdateItem
-                  - dynamodb:TransactWriteItems
                 Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-token-revocations
               - Sid: ManageRefreshTokenSessions
                 Effect: Allow
@@ -105,7 +103,6 @@ Resources:
                   - dynamodb:GetItem
                   - dynamodb:PutItem
                   - dynamodb:DeleteItem
-                  - dynamodb:TransactWriteItems
                 Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-refresh-tokens
               - Sid: ManageAuthLambdaNetworkInterfaces
                 Effect: Allow
@@ -150,7 +147,6 @@ Resources:
                   - ssm:GetParameters
                 Resource:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/*
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/*
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/config/*
               - Sid: AccessSlotTable
                 Effect: Allow
@@ -163,8 +159,6 @@ Resources:
                   - dynamodb:Query
                   - dynamodb:Scan
                   - dynamodb:ConditionCheckItem
-                  - dynamodb:TransactGetItems
-                  - dynamodb:TransactWriteItems
                 Resource:
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots/index/GSI_Doctor_Slots
@@ -179,8 +173,6 @@ Resources:
                   - dynamodb:Query
                   - dynamodb:Scan
                   - dynamodb:ConditionCheckItem
-                  - dynamodb:TransactGetItems
-                  - dynamodb:TransactWriteItems
                 Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-seats
               - Sid: AccessWaitlistTable
                 Effect: Allow
@@ -193,8 +185,6 @@ Resources:
                   - dynamodb:Query
                   - dynamodb:Scan
                   - dynamodb:ConditionCheckItem
-                  - dynamodb:TransactGetItems
-                  - dynamodb:TransactWriteItems
                 Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist
               - Sid: AccessHoldOffersTableAndIndexes
                 Effect: Allow
@@ -207,8 +197,6 @@ Resources:
                   - dynamodb:Query
                   - dynamodb:Scan
                   - dynamodb:ConditionCheckItem
-                  - dynamodb:TransactGetItems
-                  - dynamodb:TransactWriteItems
                 Resource:
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers/index/GSI_Patient_Offers
@@ -221,8 +209,6 @@ Resources:
                   - dynamodb:UpdateItem
                   - dynamodb:DeleteItem
                   - dynamodb:ConditionCheckItem
-                  - dynamodb:TransactGetItems
-                  - dynamodb:TransactWriteItems
                 Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-idempotency
               - Sid: AccessDispatchLogTable
                 Effect: Allow
@@ -325,7 +311,6 @@ Resources:
                   - dynamodb:Query
                   - dynamodb:Scan
                   - dynamodb:ConditionCheckItem
-                  - dynamodb:TransactWriteItems
                 Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist
               - Sid: MaintainHoldOffersTableAndIndexes
                 Effect: Allow
@@ -338,7 +323,6 @@ Resources:
                   - dynamodb:Query
                   - dynamodb:Scan
                   - dynamodb:ConditionCheckItem
-                  - dynamodb:TransactWriteItems
                 Resource:
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers/index/GSI_Patient_Offers
@@ -448,6 +432,9 @@ Resources:
                   - lambda:AddPermission
                   - lambda:RemovePermission
                   - lambda:GetPolicy
+                  - lambda:GetFunctionCodeSigningConfig
+                  - lambda:GetRuntimeManagementConfig
+                  - lambda:GetFunctionRecursionConfig
                 Resource: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:medislot-${Environment}-*
               - Sid: PassOnlyMediSlotLambdaExecutionRoles
                 Effect: Allow
@@ -470,18 +457,28 @@ Resources:
                   - logs:UntagResource
                   - logs:DescribeLogGroups
                   - logs:ListTagsForResource
+                  - logs:GetDataProtectionPolicy
+                  - logs:DescribeIndexPolicies
                 Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/medislot-${Environment}-*
+              # Account-level read; this action does not support resource scoping.
+              - Sid: ReadLogResourcePolicies
+                Effect: Allow
+                Action:
+                  - logs:DescribeResourcePolicies
+                Resource: '*'
               - Sid: DescribeNetworkConfiguration
                 Effect: Allow
                 Action:
                   - ec2:DescribeSecurityGroups
                   - ec2:DescribeSubnets
                   - ec2:DescribeVpcs
+                  - ec2:DescribeNetworkInterfaces
                 Resource: '*'
               - Sid: ReadMediSlotLambdaPackages
                 Effect: Allow
                 Action:
                   - s3:GetObject
+                  - s3:GetObjectVersion
                 Resource:
                   - !Sub arn:${AWS::Partition}:s3:::medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-artifacts/medislot/${Environment}/auth/*
                   - !Sub arn:${AWS::Partition}:s3:::medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-artifacts/medislot/${Environment}/app/*
@@ -491,6 +488,8 @@ Resources:
                 Action:
                   - ssm:PutParameter
                   - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:ListTagsForResource
                   - ssm:DeleteParameter
                   - ssm:AddTagsToResource
                   - ssm:RemoveTagsFromResource

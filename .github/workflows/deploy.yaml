@@ -1,4 +1,3 @@
-
 name: MediSlot CloudFormation CI/CD Pipeline
 
 on:
@@ -19,6 +18,13 @@ on:
 permissions:
   contents: read
   id-token: write
+
+# Only one deployment per environment at a time, so two quick pushes cannot
+# run CloudFormation against the same stacks in parallel. A running deployment
+# is never cancelled halfway; the next one waits for it to finish.
+concurrency:
+  group: medislot-deploy-${{ github.event.inputs.environment || 'dev' }}
+  cancel-in-progress: false
 
 env:
   AWS_REGION: ${{ vars.AWS_REGION }}
@@ -75,7 +81,7 @@ jobs:
 
       - name: Lint templates
         run: |
-          yamllint -d "{extends: relaxed, rules: {line-length: disable, empty-lines: disable}}" \
+          yamllint -d relaxed \
             infrastructure/network-stack.yaml \
             infrastructure/data-stack.yaml \
             infrastructure/iam-stack.yaml \
@@ -120,6 +126,15 @@ jobs:
     name: Deploy Network Stack
     runs-on: ubuntu-latest
     needs: lint-and-validate
+
+    # Optional production approval gate (one approval covers the whole chain,
+    # because every later job depends on this one).
+    # To enable: create GitHub Environments named "dev" and "prod", add
+    # required reviewers on "prod", then uncomment the line below.
+    # NOTE: with a job-level environment, the GitHub OIDC "sub" claim becomes
+    # repo:<owner>/<repo>:environment:<name>. The AWS role's trust policy must
+    # allow that subject first, or the role assumption will fail.
+    # environment: ${{ github.event.inputs.environment || 'dev' }}
 
     steps:
       - uses: actions/checkout@v4
