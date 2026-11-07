@@ -15,7 +15,8 @@
    to the run log, executes it and waits. A change set with no changes is
    deleted and the step passes.
 
-CloudFormation change sets use the GitHub Actions assumed role credentials.\nEvery stack update goes through a change set; nothing is changed directly.
+CloudFormation change sets use the GitHub Actions assumed role credentials.
+Every stack update goes through a change set; nothing is changed directly.
 """
 
 import argparse
