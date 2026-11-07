@@ -59,8 +59,12 @@ Lint, Security scans, Unit tests
 2. **One job per stack**, each through `scripts/cfn_deploy.py`:
    - Every update is a **change set**: created, every change printed (action, resource, replacement), executed,
      waited for. A change set with no changes is deleted and the job passes.
-   - Resources that were created by hand before they were in a template are imported once with an IMPORT change
-     set (`--import`).
+   - Resources the template would create under a name that already exists in the account (created by hand, or
+     left by an earlier stack) are adopted first with an IMPORT change set. This covers tables, buckets, the
+     database, subnet groups, log groups, SSM parameters, Lambda functions, IAM roles and alarms.
+   - A parameter that is not passed keeps the value the stack already has, as `aws cloudformation deploy` does, so
+     a deploy never resets a setting to the template default.
+   - If CloudFormation's early validation rejects a change set, the log names the resource and the reason.
    - If an update would replace the database, a table, the photo bucket, the VPC or a subnet (`--protect`), the
      job stops before anything changes.
    - Stacks left behind by failed runs are recovered first (`ROLLBACK_COMPLETE`, `REVIEW_IN_PROGRESS`,

@@ -55,6 +55,14 @@ There is one workflow, `.github/workflows/deploy.yaml` (**MediSlot CloudFormatio
 
 **Safeguards in `scripts/cfn_deploy.py`:**
 
+- **Existing resources are adopted.** If the template would create a table, bucket, database, log group, SSM
+  parameter, Lambda function, IAM role or alarm whose name already exists in the account, it is imported into the
+  stack first instead of failing.
+- **Deployed parameter values are kept.** A parameter that is not passed keeps its deployed value, as
+  `aws cloudformation deploy` does.
+- **Rejected change sets are explained.** If CloudFormation's early validation rejects a change set, the job prints
+  the resource and the reason.
+
 - **Protected resources.** The database, every DynamoDB table, the photo bucket, the VPC and the subnets are
   protected. If an update would replace one of them, the job stops before anything changes and names the property
   that forces the replacement.

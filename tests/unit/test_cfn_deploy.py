@@ -28,6 +28,7 @@ class FakeCfn:
         self.existing_resources = existing_resources
         self.calls = []
         self.change_set_bodies = []
+        self.fail_reason = None
 
     def _status(self):
         return self.statuses[0] if len(self.statuses) == 1 else self.statuses.pop(0)
@@ -62,7 +63,16 @@ class FakeCfn:
                            kwargs.get("ResourcesToImport")))
 
     def describe_change_set(self, StackName, ChangeSetName, NextToken=None):
+        if self.fail_reason and not ChangeSetName.startswith("import"):
+            return {"Status": "FAILED", "ChangeSetName": ChangeSetName, "ChangeSetId": "arn:cs/" + ChangeSetName,
+                    "StatusReason": self.fail_reason}
         return {"Status": "CREATE_COMPLETE", "ChangeSetName": ChangeSetName, "Changes": self.changes}
+
+    def describe_events(self, **kwargs):
+        self.calls.append(("describe_events", kwargs.get("Filters")))
+        return {"OperationEvents": [{"LogicalResourceId": "SlotsTable", "ResourceType": "AWS::DynamoDB::Table",
+                                     "ValidationName": "ResourceExistenceCheck",
+                                     "ValidationStatusReason": "Resource medislot-dev-slots already exists"}]}
 
     def delete_change_set(self, **kwargs):
         self.calls.append(("delete_change_set", kwargs["ChangeSetName"]))
@@ -185,6 +195,81 @@ def test_missing_hand_made_resource_is_simply_created(run):
     template = {"Parameters": {"Environment": {"Type": "String"}},
                 "Resources": {"RefreshTokensTable": {"Type": "AWS::DynamoDB::Table", "DeletionPolicy": "Retain",
                                                      "Properties": {"TableName": "t"}}}}
-    fake = FakeCfn([None, None, "CREATE_COMPLETE"], changes=[])
+    fake = FakeCfn([None, "CREATE_COMPLETE"], changes=[])
     run(fake, ["--import", "RefreshTokensTable"], template=template, exists=lambda *a: False)
     assert [c[1] for c in fake.calls if c[0] == "create_change_set"] == ["CREATE"]
+
+
+def test_existing_named_resource_is_adopted_without_being_listed(run):
+    """The template would create SlotsTable, but a table with that name already exists."""
+    template = {"Parameters": {"Environment": {"Type": "String"}},
+                "Resources": {"Existing": {"Type": "AWS::SNS::Topic"},
+                              "SlotsTable": {"Type": "AWS::DynamoDB::Table",
+                                             "Properties": {"TableName": {"Fn::Sub": "medislot-${Environment}-slots"}}}}}
+    fake = FakeCfn(["UPDATE_COMPLETE"], changes=[], existing_resources=["Existing"])
+    uploaded = run(fake, [], template=template)
+    imports = [c for c in fake.calls if c[0] == "create_change_set" and c[1] == "IMPORT"]
+    assert imports[0][3][0]["ResourceIdentifier"] == {"TableName": "medislot-dev-slots"}
+    adopted = json.loads(uploaded[0])["Resources"]["SlotsTable"]
+    assert adopted["DeletionPolicy"] == "Retain"   # added: an import requires one
+
+
+def test_resource_depending_on_a_missing_resource_is_not_imported(run):
+    template = {"Parameters": {"Environment": {"Type": "String"}},
+                "Resources": {"Api": {"Type": "AWS::ApiGateway::RestApi"},
+                              "BaseUrl": {"Type": "AWS::SSM::Parameter",
+                                          "Properties": {"Name": "/medislot/dev/api/base-url",
+                                                         "Value": {"Fn::Sub": "https://${Api}.example"}}}}}
+    fake = FakeCfn(["UPDATE_COMPLETE"], changes=[], existing_resources=[])
+    run(fake, [], template=template)
+    assert [c[1] for c in fake.calls if c[0] == "create_change_set"] == ["UPDATE"]
+
+
+def test_failed_validation_prints_the_resource_and_reason(run, capsys):
+    fake = FakeCfn(["UPDATE_COMPLETE"], changes=[])
+    fake.fail_reason = "The following hook(s)/validation failed: [AWS::EarlyValidation::ResourceExistenceCheck]."
+    with pytest.raises(SystemExit):
+        run(fake, [], exists=lambda *a: False)
+    out = capsys.readouterr().out
+    assert ("describe_events", {"FailedEvents": True}) in fake.calls
+    assert "SlotsTable (AWS::DynamoDB::Table) ResourceExistenceCheck: Resource medislot-dev-slots already exists" in out
+
+
+def test_references_follow_ref_getatt_and_sub():
+    module = load_script()
+    fragment = {"A": {"Ref": "Table"}, "B": {"Fn::GetAtt": ["Role", "Arn"]},
+                "C": {"Fn::Sub": "${Bucket.Arn}/x/${AWS::Region}/${Environment}"},
+                "D": {"Fn::Sub": ["${Local}-${Topic}", {"Local": {"Ref": "Queue"}}]}}
+    assert module.references(fragment) == {"Table", "Role", "Bucket", "Environment", "Topic", "Queue"}
+
+
+def test_parameters_not_passed_keep_their_deployed_values():
+    module = load_script()
+    template = {"Parameters": {"Environment": {}, "DBName": {"Default": "medislot"}, "NewSetting": {"Default": "x"}}}
+    params = module.change_set_parameters(template, {"Environment": "dev"}, {"Environment": "dev", "DBName": "medislotdb"})
+    assert params == [{"ParameterKey": "Environment", "ParameterValue": "dev"},
+                      {"ParameterKey": "DBName", "UsePreviousValue": True}]   # NewSetting: template default
+
+
+def test_unknown_parameter_is_rejected():
+    module = load_script()
+    with pytest.raises(SystemExit, match="Typo"):
+        module.change_set_parameters({"Parameters": {"Environment": {}}}, {"Typo": "1"}, {})
+
+
+def test_protected_differences_are_reported_with_parameters_resolved(capsys):
+    module = load_script()
+    deployed = {"Resources": {"MediSlotMySQL": {"Type": "AWS::RDS::DBInstance",
+                                                "Properties": {"DBName": {"Ref": "DBName"}, "StorageEncrypted": False}}}}
+
+    class Cfn:
+        def get_template(self, **kwargs):
+            return {"TemplateBody": json.dumps(deployed)}
+
+    new = {"Parameters": {"DBName": {"Default": "medislot"}},
+           "Resources": {"MediSlotMySQL": {"Type": "AWS::RDS::DBInstance",
+                                           "Properties": {"DBName": {"Ref": "DBName"}, "StorageEncrypted": True}}}}
+    module.report_protected_differences(Cfn(), "s", new, {"MediSlotMySQL"}, {}, {"DBName": "medislot"})
+    out = capsys.readouterr().out
+    assert "MediSlotMySQL.StorageEncrypted deployed=false new=true" in out
+    assert "DBName" not in out    # same value once the parameter is resolved

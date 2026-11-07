@@ -68,7 +68,7 @@ Browser ──HTTP :80──▶ EC2 Flask (server-side session holds the tokens)
 | Authorizer cache | TTL 0 | Box 4 says so; logout must take effect at once. |
 | EC2 private IP | Assigned by the subnet, not fixed at 10.0.1.10 | A fixed IP blocks CloudFormation from replacing the instance (the new one cannot start while the old one holds the address). The public address is an Elastic IP, so the URL stays the same. |
 | Tracing | No X-Ray | Not part of the architecture. Requests are followed through the correlation ID in every log line (box 10, CloudWatch). |
-| CloudWatch Logs endpoint | Not created | Lambda ships its logs outside the VPC; nothing calls the Logs API from inside it. |
+| CloudWatch Logs endpoint | Off by default (`EnableCloudWatchLogsEndpoint`); an existing stack keeps its deployed value | Lambda ships its logs outside the VPC; nothing calls the Logs API from inside it. |
 | Events to Lambda | EventBridge rules invoke Lambda directly, no SQS | As drawn in box 8. Retries and failure destinations are covered in [events.md](design/events.md). |
 | Static files for the web app | Served by Flask from the instance | One small instance, low traffic; no extra S3 or CloudFront in the diagram. |
 | EC2 instance type | t3.micro by default (t2.micro allowed by the parameter) | The diagram shows t2.micro, but AWS Free plan accounts cannot launch t2.micro. t3.micro is the free-plan equivalent and what the existing instance runs on. |
