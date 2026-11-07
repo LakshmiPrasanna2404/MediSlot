@@ -904,3 +904,13 @@ Outputs:
     Value: !Ref InternetGateway
     Export:
       Name: !Sub medislot-${Environment}-igw-id
+
+  # With private DNS on, every AWS service that has an interface endpoint resolves
+  # to the endpoint inside this VPC. Anything in the VPC that calls those services
+  # (such as the dashboard instance) must be allowed into this group on 443.
+  VPCEndpointSecurityGroupId:
+    Condition: CreateAnyInterfaceEndpoint
+    Description: Security group on the interface endpoints; ingress on 443 is by source security group
+    Value: !Ref VPCEndpointSecurityGroup
+    Export:
+      Name: !Sub medislot-${Environment}-vpce-sg-id

@@ -80,8 +80,25 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  # The VPC has private DNS on its SSM and CloudWatch Logs interface endpoints, so
+  # this instance reaches those services through them. The endpoint group only
+  # admits the Lambda group, so without this rule every call times out.
+  DashboardToEndpointsIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId:
+        Fn::ImportValue:
+          Fn::Sub: medislot-${Environment}-vpce-sg-id
+      Description: HTTPS from the dashboard instance
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      SourceSecurityGroupId: !Ref DashboardSecurityGroup
+
   DashboardInstance:
     Type: AWS::EC2::Instance
+    # The rule must exist before the app boots and loads its login from SSM.
+    DependsOn: DashboardToEndpointsIngress
     Properties:
       ImageId: !Ref LatestAmiId
       InstanceType: !Ref InstanceType

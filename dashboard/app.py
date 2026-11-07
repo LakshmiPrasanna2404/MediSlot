@@ -56,8 +56,19 @@ class Credentials:
 
 def load_credentials_from_ssm(settings):
     import boto3
+    from botocore.config import Config
 
-    ssm = boto3.client("ssm", region_name=settings.region)
+    # Short timeouts: if SSM is unreachable the app must say "not configured"
+    # quickly, not hang the worker for minutes on boto3's defaults.
+    ssm = boto3.client(
+        "ssm",
+        region_name=settings.region,
+        config=Config(
+            connect_timeout=3,
+            read_timeout=5,
+            retries={"total_max_attempts": 2},
+        ),
+    )
     names = {
         key: f"{settings.ssm_prefix}/{key}"
         for key in ("username", "password-hash", "session-secret")
