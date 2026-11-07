@@ -705,7 +705,8 @@ jobs:
       - name: Check dashboard configuration
         shell: bash
         env:
-          DASHBOARD_ADMIN_CIDR: ${{ vars.DASHBOARD_ADMIN_CIDR }}
+          # Default is the admin's public IP. A DASHBOARD_ADMIN_CIDR repo variable overrides it.
+          DASHBOARD_ADMIN_CIDR: ${{ vars.DASHBOARD_ADMIN_CIDR || '202.164.135.238/32' }}
         run: |
           set -euo pipefail
 
@@ -786,7 +787,8 @@ jobs:
       - name: Deploy dashboard
         shell: bash
         env:
-          DASHBOARD_ADMIN_CIDR: ${{ vars.DASHBOARD_ADMIN_CIDR }}
+          # Default is the admin's public IP. A DASHBOARD_ADMIN_CIDR repo variable overrides it.
+          DASHBOARD_ADMIN_CIDR: ${{ vars.DASHBOARD_ADMIN_CIDR || '202.164.135.238/32' }}
         run: |
           set -euo pipefail
 
