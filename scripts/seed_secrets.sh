@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
-# One-time, per environment: create the SecureString parameters that
-# CloudFormation cannot create (it can only read them).
+# Create the SecureString parameters that CloudFormation cannot create (it can
+# only read them). The pipeline runs this before every deployment; it only
+# creates what is missing, so in an account that already has them it changes
+# nothing. Can also be run by hand:
 #
 #   bash scripts/seed_secrets.sh dev
 #

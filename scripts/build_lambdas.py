@@ -138,7 +138,9 @@ def main():
     manifest["dashboard"] = f"medislot/{args.env}/dashboard/{web.name}"
     print(f"built {web.name}")
 
-    if args.upload:
+    if args.upload is not None:
+        if not args.upload.strip() or args.upload == "None":
+            raise SystemExit("--upload was given an empty bucket name")
         for key in manifest["functions"].values():
             upload(args.upload, key, BUILD / "dist" / Path(key).name)
         upload(args.upload, manifest["dashboard"], web)

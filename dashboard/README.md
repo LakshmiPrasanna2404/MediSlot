@@ -49,6 +49,7 @@ Tests: `python -m pytest tests/unit/test_web.py` (the API is mocked).
 
 The pipeline zips this folder, uploads it to the artifacts bucket and passes the key to the dashboard stack. A new
 key changes the instance's boot script, CloudFormation restarts the instance and the script installs the new
-package. Expect about a minute of downtime per deploy. Boot logs: EC2 console, Actions > Monitor and troubleshoot >
+package. On the instance, systemd runs the app with Flask's own threaded server on port 80
+(`flask --app dashboard.wsgi:app run --host 0.0.0.0 --port 80 --with-threads`); there is no separate WSGI server. Expect about a minute of downtime per deploy. Boot logs: EC2 console, Actions > Monitor and troubleshoot >
 Get system log. Application logs: connect with Session Manager (there is no SSH) and run
 `journalctl -u medislot-web -n 200`.

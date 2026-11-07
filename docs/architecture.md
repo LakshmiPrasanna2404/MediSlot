@@ -70,23 +70,26 @@ Browser ──HTTP :80──▶ EC2 Flask (server-side session holds the tokens)
 | Tracing | No X-Ray | Not part of the architecture. Requests are followed through the correlation ID in every log line (box 10, CloudWatch). |
 | CloudWatch Logs endpoint | Not created | Lambda ships its logs outside the VPC; nothing calls the Logs API from inside it. |
 | Events to Lambda | EventBridge rules invoke Lambda directly, no SQS | As drawn in box 8. Retries and failure destinations are covered in [events.md](design/events.md). |
-| Static files for the web app | Served by Flask from the instance | One t2.micro, low traffic; no extra S3 or CloudFront in the diagram. |
+| Static files for the web app | Served by Flask from the instance | One small instance, low traffic; no extra S3 or CloudFront in the diagram. |
+| EC2 instance type | t3.micro by default (t2.micro allowed by the parameter) | The diagram shows t2.micro, but AWS Free plan accounts cannot launch t2.micro. t3.micro is the free-plan equivalent and what the existing instance runs on. |
+| Web server process | Flask's own threaded server under systemd | No separate WSGI server; one small instance with low traffic. |
 
 ## Stacks and deployment order
 
-| Order | Stack | Contains |
-|---|---|---|
-| 0 | `medislot-bootstrap` (once, by hand) | GitHub OIDC provider, deploy and test roles, CloudFormation execution role, artifacts bucket |
-| 1 | `medislot-<env>-network` | VPC, subnets, route tables, security groups, VPC endpoints |
-| 2 | `medislot-<env>-data` | RDS, 8 DynamoDB tables, photo bucket |
-| 3 | `medislot-<env>-config` | Non-secret SSM parameters under `/medislot/<env>/config/` |
-| 4 | `medislot-<env>-iam` | Per-function roles, scheduler role, web app instance profile |
-| 5 | `medislot-<env>-auth` | Auth and Authorizer Lambdas, auth SSM parameters |
-| 6 | `medislot-<env>-app` | Doctor and patient domain Lambdas, migration Lambda |
-| 7 | `medislot-<env>-jobs` | Slot materialiser and its daily schedule |
-| 8 | `medislot-<env>-monitoring` | Alarms and the alarm SNS topic |
-| 9 | `medislot-<env>-dashboard` | EC2 web application and its Elastic IP |
-| 10 | `medislot-<env>-api` | REST API, routes, models, gateway responses, stage, base URL in SSM |
+| Order | Stack | Contains | Deployed with |
+|---|---|---|---|
+| 1 | `medislot-<env>-network` | VPC, subnets, route tables, security groups, VPC endpoints | pipeline role |
+| 2 | `medislot-<env>-data` | RDS, 8 DynamoDB tables, photo bucket | pipeline role |
+| 3 | `medislot-<env>-iam` | Per-function roles, scheduler role, web app instance profile, CloudFormation execution role | pipeline role |
+| 4 | `medislot-<env>-config` | Non-secret SSM parameters under `/medislot/<env>/config/` | execution role |
+| 5 | `medislot-<env>-auth` | Auth and Authorizer Lambdas, auth SSM parameters | execution role |
+| 6 | `medislot-<env>-app` | Doctor and patient domain Lambdas, migration Lambda | execution role |
+| 7 | `medislot-<env>-jobs` | Slot materialiser and its daily schedule | execution role |
+| 8 | `medislot-<env>-monitoring` | Alarms and the alarm SNS topic | execution role |
+| 9 | `medislot-<env>-dashboard` | EC2 web application and its Elastic IP | execution role |
+| 10 | `medislot-<env>-api` | REST API, routes, models, gateway responses, stage, base URL in SSM | execution role |
 
-Every update goes through a change set (`scripts/cfn_deploy.py`). The API stack is last so every Lambda it points to
-exists. The web app reads the API URL from SSM at run time, so it does not need the API stack first.
+All of it is deployed by one workflow, `.github/workflows/deploy.yaml`, one job per stack, each update through a
+change set (`scripts/cfn_deploy.py`). The artifacts bucket and the SSM SecureStrings are created by the same
+workflow when they are missing. The API stack is last so every Lambda it points to exists. The web app reads the
+API URL from SSM at run time, so it does not need the API stack first.

@@ -4,7 +4,7 @@
 #
 #   bash scripts/github/protect_main.sh LakshmiPrasanna2404/MediSlot
 #
-# Required checks are the job names in .github/workflows/ci.yml.
+# Required checks are the pull-request job names in .github/workflows/deploy.yaml.
 set -euo pipefail
 
 REPO="${1:?usage: protect_main.sh <owner/repo>}"
@@ -13,7 +13,7 @@ gh api --method PUT "repos/${REPO}/branches/main/protection" --input - <<'JSON'
 {
   "required_status_checks": {
     "strict": true,
-    "contexts": ["Lint", "Security scans", "Unit tests", "Integration tests"]
+    "contexts": ["Lint", "Security scans", "Unit tests"]
   },
   "enforce_admins": true,
   "required_pull_request_reviews": {

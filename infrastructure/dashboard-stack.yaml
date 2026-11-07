@@ -25,11 +25,14 @@ Parameters:
 
   InstanceType:
     Type: String
-    Default: t2.micro
+    Default: t3.micro
     AllowedValues:
-      - t2.micro
       - t3.micro
-    Description: EC2 instance type (t2.micro as in the architecture).
+      - t2.micro
+    Description: >-
+      EC2 instance type. The architecture shows t2.micro; t3.micro is the
+      default because AWS Free plan accounts cannot launch t2.micro, and it is
+      the type the existing instance already runs on.
 
   LatestAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
@@ -134,7 +137,8 @@ Resources:
           Group=medislot
           WorkingDirectory=/opt/medislot/app
           EnvironmentFile=/etc/medislot-web.env
-          ExecStart=/opt/medislot/venv/bin/gunicorn --bind 0.0.0.0:80 --workers 2 --threads 4 --timeout 60 --access-logfile - dashboard.wsgi:app
+          # Flask's built-in server (threaded); requests are logged to the journal.
+          ExecStart=/opt/medislot/venv/bin/flask --app dashboard.wsgi:app run --host 0.0.0.0 --port 80 --with-threads --no-reload --no-debugger
           Restart=always
           RestartSec=5
           AmbientCapabilities=CAP_NET_BIND_SERVICE
@@ -147,10 +151,12 @@ Resources:
           WantedBy=multi-user.target
           UNITEOF
 
+          # The earlier ops dashboard service used the same port; stop it first.
+          systemctl disable --now medislot-dashboard 2>/dev/null || true
+          rm -f /etc/systemd/system/medislot-dashboard.service
           systemctl daemon-reload
           systemctl enable medislot-web
           systemctl restart medislot-web
-          systemctl disable --now medislot-dashboard 2>/dev/null || true
           echo "medislot web bootstrap done: $(date -u +%FT%TZ)"
 
           --==MEDISLOT==--

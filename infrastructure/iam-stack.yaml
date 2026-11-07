@@ -2,10 +2,10 @@ AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   MediSlot IAM. One execution role per Lambda function (every function in the
   architecture diagrams, including the ones planned for Milestones 5 and 6),
-  the EventBridge Scheduler invoke role, the API Gateway logging role and the
-  web instance role. No wildcard actions; resources are named ARNs. Only the
-  ENI actions use Resource "*", because AWS does not support resource-level
-  permissions for them.
+  the EventBridge Scheduler invoke role, the API Gateway logging role, the web
+  instance role, and the CloudFormation execution role that deploys every stack
+  after network, data and iam. Resources are named ARNs wherever the service
+  supports it.
 
 Parameters:
   Environment:
@@ -1017,8 +1017,9 @@ Resources:
                 Action:
                   - s3:GetObject
                 Resource: !Sub
-                  - arn:${AWS::Partition}:s3:::${Bucket}/medislot/${Environment}/dashboard/*
-                  - Bucket: !ImportValue medislot-artifacts-bucket-name
+                  - ${BucketArn}/medislot/${Environment}/dashboard/*
+                  - BucketArn:
+                      Fn::ImportValue: !Sub medislot-${Environment}-artifact-bucket-arn
 
   DashboardInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -1044,6 +1045,211 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - !Ref LambdaBasePolicy
+
+  # ---------------------------------------------------------------------------
+  # CloudFormation execution role. The pipeline deploys network, data and iam
+  # with its own role, and every other stack through this one (it is the
+  # service role those stacks were created with). Write actions are listed by
+  # name; read-only actions use Describe*/Get*/List* so CloudFormation's
+  # resource handlers can read what they manage.
+  # ---------------------------------------------------------------------------
+  CloudFormationExecutionRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: 'EC2 instance, address and security group writes cannot be scoped to a resource name before the resource exists; they are limited to this region.'
+    Properties:
+      RoleName: !Sub medislot-${Environment}-cloudformation-execution-role
+      Description: Service role CloudFormation uses for the MediSlot config, auth, app, jobs, monitoring, dashboard and api stacks
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: cloudformation.amazonaws.com
+            Action: sts:AssumeRole
+      Policies:
+        - PolicyName: MediSlotStackDeployment
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: LambdaFunctions
+                Effect: Allow
+                Action:
+                  - lambda:CreateFunction
+                  - lambda:DeleteFunction
+                  - lambda:UpdateFunctionCode
+                  - lambda:UpdateFunctionConfiguration
+                  - lambda:TagResource
+                  - lambda:UntagResource
+                  - lambda:AddPermission
+                  - lambda:RemovePermission
+                  - lambda:PutFunctionConcurrency
+                  - lambda:DeleteFunctionConcurrency
+                  - lambda:PutFunctionEventInvokeConfig
+                  - lambda:UpdateFunctionEventInvokeConfig
+                  - lambda:DeleteFunctionEventInvokeConfig
+                  - lambda:Get*
+                  - lambda:List*
+                Resource: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:medislot-${Environment}-*
+              - Sid: ReadLambdaPackages
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub
+                  - ${BucketArn}/medislot/${Environment}/*
+                  - BucketArn:
+                      Fn::ImportValue: !Sub medislot-${Environment}-artifact-bucket-arn
+              - Sid: PassMediSlotRoles
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-*
+                Condition:
+                  StringEquals:
+                    iam:PassedToService:
+                      - lambda.amazonaws.com
+                      - ec2.amazonaws.com
+                      - scheduler.amazonaws.com
+                      - apigateway.amazonaws.com
+              - Sid: ReadMediSlotRoles
+                Effect: Allow
+                Action:
+                  - iam:GetRole
+                  - iam:GetInstanceProfile
+                Resource:
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-${Environment}-*
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:instance-profile/medislot-${Environment}-*
+              - Sid: LogGroups
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:DeleteLogGroup
+                  - logs:PutRetentionPolicy
+                  - logs:DeleteRetentionPolicy
+                  - logs:TagResource
+                  - logs:UntagResource
+                  - logs:TagLogGroup
+                  - logs:UntagLogGroup
+                  - logs:ListTagsForResource
+                  - logs:ListTagsLogGroup
+                  - logs:GetDataProtectionPolicy
+                Resource:
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/medislot-${Environment}-*
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/apigateway/medislot-${Environment}-*
+              - Sid: LogsReadOnly
+                Effect: Allow
+                Action: logs:Describe*
+                Resource: '*'
+              - Sid: SsmParameters
+                Effect: Allow
+                Action:
+                  - ssm:PutParameter
+                  - ssm:DeleteParameter
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:AddTagsToResource
+                  - ssm:RemoveTagsFromResource
+                  - ssm:ListTagsForResource
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/*
+              - Sid: PublicAmiParameter
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}::parameter/aws/service/ami-amazon-linux-latest/*
+              - Sid: SsmReadOnly
+                Effect: Allow
+                Action: ssm:DescribeParameters
+                Resource: '*'
+              - Sid: WebInstanceAndNetworking
+                Effect: Allow
+                Action:
+                  - ec2:RunInstances
+                  - ec2:StartInstances
+                  - ec2:StopInstances
+                  - ec2:TerminateInstances
+                  - ec2:ModifyInstanceAttribute
+                  - ec2:ModifyInstanceMetadataOptions
+                  - ec2:ModifyInstanceCreditSpecification
+                  - ec2:AssociateIamInstanceProfile
+                  - ec2:DisassociateIamInstanceProfile
+                  - ec2:ReplaceIamInstanceProfileAssociation
+                  - ec2:CreateTags
+                  - ec2:DeleteTags
+                  - ec2:CreateSecurityGroup
+                  - ec2:DeleteSecurityGroup
+                  - ec2:AuthorizeSecurityGroupIngress
+                  - ec2:AuthorizeSecurityGroupEgress
+                  - ec2:RevokeSecurityGroupIngress
+                  - ec2:RevokeSecurityGroupEgress
+                  - ec2:ModifySecurityGroupRules
+                  - ec2:AllocateAddress
+                  - ec2:ReleaseAddress
+                  - ec2:AssociateAddress
+                  - ec2:DisassociateAddress
+                  - ec2:Describe*
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: !Ref AWS::Region
+              - Sid: ApiGateway
+                Effect: Allow
+                Action:
+                  - apigateway:GET
+                  - apigateway:POST
+                  - apigateway:PUT
+                  - apigateway:PATCH
+                  - apigateway:DELETE
+                Resource:
+                  - !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis
+                  - !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis/*
+                  - !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}::/apis
+                  - !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}::/apis/*
+                  - !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}::/account
+                  - !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}::/tags/*
+              - Sid: Scheduler
+                Effect: Allow
+                Action:
+                  - scheduler:CreateSchedule
+                  - scheduler:UpdateSchedule
+                  - scheduler:DeleteSchedule
+                  - scheduler:TagResource
+                  - scheduler:UntagResource
+                  - scheduler:Get*
+                  - scheduler:List*
+                Resource:
+                  - !Sub arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/*/medislot-${Environment}-*
+                  - !Sub arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule-group/*
+              - Sid: AlarmTopic
+                Effect: Allow
+                Action:
+                  - sns:CreateTopic
+                  - sns:DeleteTopic
+                  - sns:SetTopicAttributes
+                  - sns:Subscribe
+                  - sns:Unsubscribe
+                  - sns:TagResource
+                  - sns:UntagResource
+                  - sns:Get*
+                  - sns:List*
+                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-*
+              - Sid: Alarms
+                Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricAlarm
+                  - cloudwatch:DeleteAlarms
+                  - cloudwatch:TagResource
+                  - cloudwatch:UntagResource
+                  - cloudwatch:ListTagsForResource
+                  - cloudwatch:DescribeAlarms
+                Resource: !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:medislot-${Environment}-*
+              - Sid: AlarmsReadOnly
+                Effect: Allow
+                Action: cloudwatch:DescribeAlarms
+                Resource: '*'
 
 Outputs:
   AuthorizerLambdaRoleArn:
@@ -1158,6 +1364,11 @@ Outputs:
     Value: !Ref DashboardInstanceProfile
     Export:
       Name: !Sub medislot-${Environment}-dashboard-profile-name
+  CloudFormationExecutionRoleArn:
+    Description: Service role for every stack after network, data and iam (read by the pipeline)
+    Value: !GetAtt CloudFormationExecutionRole.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-cloudformation-execution-role-arn
   AppLambdaRoleArn:
     Description: LEGACY export, removed with AppLambdaRole
     Value: !GetAtt AppLambdaRole.Arn

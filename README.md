@@ -23,18 +23,18 @@ follow in Milestones 5–6; their design is in `docs/design/`.
 | [docs/design/reschedule-saga.md](docs/design/reschedule-saga.md) | Reschedule steps and compensation |
 | [docs/design/events.md](docs/design/events.md) | Event catalogue, notifications, scheduled jobs |
 | [docs/cicd.md](docs/cicd.md) | Pipelines, required checks, secrets strategy |
-| [docs/runbook.md](docs/runbook.md) | New account setup, move from the earlier setup, operations, recovery, teardown |
+| [docs/runbook.md](docs/runbook.md) | What the pipeline needs, the first run from the earlier setup, operations, recovery, teardown |
 | [dashboard/README.md](dashboard/README.md) | The web app |
 
 ## Repository layout
 
 ```
-.github/workflows/   ci.yml (pull requests), deploy.yml (merge to main)
+.github/workflows/   deploy.yaml: the one workflow (checks on pull requests; checks + deploy on main)
 dashboard/           Flask web app: doctor portal and patient portal (EC2)
 database/migrations/ Versioned SQL migrations (applied by the db-migrate Lambda)
 database/schema.sql  The resulting schema, for reference
 docs/                Architecture, data model, API, design notes, CI/CD, runbook
-infrastructure/      CloudFormation: bootstrap, network, data, config, iam, auth, app, jobs, monitoring, dashboard, api
+infrastructure/      CloudFormation: network, data, iam, config, auth, app, jobs, monitoring, dashboard, api
 lambda/<function>/   One folder per Lambda (handler + requirements.txt)
 lambda/shared/       medislot_common: config, DB, HTTP, validation, tokens, slots, logging
 scripts/             Build, deploy (change sets), secrets seeding, branch protection, CI helpers
@@ -65,10 +65,10 @@ medislot-test-pw). They create and drop their own databases.
 ## How changes reach AWS
 
 1. Branch from `main`: `feature/…`, `fix/…`, `infra/…` or `docs/…`.
-2. Open a pull request using the template. CI runs lint, security scans, unit tests and integration tests; all four
-   are required, and one approving review is required.
-3. Merge. The deploy workflow packages the code, deploys every stack through change sets, runs migrations, then the
-   integration and smoke tests.
+2. Open a pull request using the template. The workflow runs Lint, Security scans and Unit tests; all three are
+   required, and one approving review is required.
+3. Merge. The same workflow packages the code, deploys every stack through change sets (one job per stack), runs
+   the migrations, then the integration and smoke tests against the deployed API.
 
-First-time setup of an AWS account (bootstrap stack, secrets, GitHub settings) is in
-[docs/runbook.md](docs/runbook.md).
+The only settings it needs are the `AWS_ROLE_ARN` secret and the `AWS_REGION` variable (and optionally
+`ALARM_EMAIL`); everything else it creates itself. See [docs/runbook.md](docs/runbook.md).

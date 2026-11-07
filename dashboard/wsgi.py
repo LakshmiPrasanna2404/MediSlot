@@ -1,4 +1,4 @@
-"""gunicorn entry point: gunicorn dashboard.wsgi:app"""
+"""Entry point: flask --app dashboard.wsgi:app run (see infrastructure/dashboard-stack.yaml)."""
 
 from dashboard import create_app
 

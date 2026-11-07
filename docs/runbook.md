@@ -1,127 +1,129 @@
 # Runbook
 
-Commands assume the repository root, AWS CLI v2 signed in to the target account with administrator rights (only the
-one-time steps need them), the GitHub CLI (`gh`) signed in as a repository admin, Python 3.12 and `openssl`.
-`ENV` is `dev` unless stated otherwise.
+Commands assume the repository root, the AWS CLI v2 signed in to the account, and the GitHub CLI (`gh`) signed in
+as a repository admin. `dev` is the environment unless stated otherwise.
 
-## 1. New AWS account, from nothing
+## 1. What the pipeline needs, and what it creates itself
 
-### 1.1 Choose a region
+There is one workflow, `.github/workflows/deploy.yaml` (**MediSlot CloudFormation CI/CD Pipeline**).
 
-```bash
-export AWS_REGION=us-east-1        # any region with all the services in docs/architecture.md
-```
+**Set once by hand:**
 
-### 1.2 Bootstrap stack (once per account, by hand)
+- The GitHub OIDC role in AWS, `medislot-github-actions-role`. It is the same role the pipeline already used.
+- The repository settings that point the pipeline at that role:
 
-It holds the GitHub OIDC trust, the deploy and test roles, the CloudFormation execution role and the artifacts
-bucket. The pipeline cannot create these itself, because it needs them in order to run.
+| GitHub setting | Value |
+|---|---|
+| Secret `AWS_ROLE_ARN` | ARN of `medislot-github-actions-role` |
+| Variable `AWS_REGION` | e.g. `us-east-1` |
+| Variable `ALARM_EMAIL` (optional) | Address for alarm emails; empty means no subscriber |
 
-```bash
-# Does the account already trust GitHub Actions?
-aws iam list-open-id-connect-providers --query "OpenIDConnectProviderList[].Arn" --output text \
-  | grep -q token.actions.githubusercontent.com && OIDC=false || OIDC=true
+**Created by the pipeline on its first run, and only checked afterwards:**
 
-aws cloudformation deploy --stack-name medislot-bootstrap \
-  --template-file infrastructure/bootstrap-stack.yaml \
-  --capabilities CAPABILITY_NAMED_IAM \
-  --parameter-overrides GitHubOwner=<github-user-or-org> GitHubRepo=MediSlot CreateOidcProvider=$OIDC
+- **The artifacts bucket** `medislot-<env>-<account>-<region>-artifacts`, which holds the Lambda zips, the web app
+  package and the templates (`scripts/ci/ensure_artifact_bucket.sh`).
+- **The SecureStrings in SSM** (`scripts/seed_secrets.sh`): the JWT signing key, the database username and password,
+  and the web app session key. Random values are created only if missing, are never printed and are never
+  overwritten.
+- **The CloudFormation execution role** `medislot-<env>-cloudformation-execution-role`, in the iam stack. network,
+  data and iam are deployed with the pipeline's own role. Every other stack goes through this role.
 
-aws cloudformation describe-stacks --stack-name medislot-bootstrap \
-  --query "Stacks[0].Outputs[].[OutputKey,OutputValue]" --output table
-```
+## 2. Deploying
 
-### 1.3 Seed the secrets (once per environment)
+- **Pull request into main:** Lint, Security scans and Unit tests run. These are the required checks.
+- **Merge, or Actions → MediSlot CloudFormation CI/CD Pipeline → Run workflow:** the same checks, then one job per
+  stack, then the database migrations, the integration tests against the deployed API and a smoke test.
 
-```bash
-bash scripts/seed_secrets.sh dev
-```
+| Order | Job | Stack | Deployed with |
+|---|---|---|---|
+| 1 | Prepare and Package | artifacts bucket, secrets, Lambda and web packages | pipeline role |
+| 2 | Deploy Network Stack | `medislot-dev-network` | pipeline role |
+| 3 | Deploy Data Stack | `medislot-dev-data` | pipeline role |
+| 4 | Deploy IAM Stack | `medislot-dev-iam` | pipeline role |
+| 5 | Deploy Config Stack | `medislot-dev-config` | execution role |
+| 6 | Deploy Auth and Authorizer Lambdas | `medislot-dev-auth` | execution role |
+| 7 | Deploy Doctor and Patient Lambdas | `medislot-dev-app` | execution role |
+| 8 | Deploy Scheduled Jobs | `medislot-dev-jobs` | execution role |
+| 9 | Deploy Monitoring and Alarms | `medislot-dev-monitoring` | execution role |
+| 10 | Deploy Web App (EC2) | `medislot-dev-dashboard` | execution role |
+| 11 | Deploy REST API | `medislot-dev-api` | execution role |
+| 12 | Database Migrations | RDS schema (`database/migrations`) | pipeline role |
+| 13 | Integration Tests, Smoke Test | — | pipeline role |
 
-This creates the JWT signing secret, the database username and password, and the web app session key in SSM,
-with random values that are never printed. It never overwrites a value that already exists.
+**How each stack is deployed.** Every stack is updated through a change set, and the log lists each change
+(action, resource, whether it is replaced) before it runs.
 
-### 1.4 GitHub settings
+**Safeguards in `scripts/cfn_deploy.py`:**
 
-```bash
-REPO=<owner>/MediSlot
-gh secret set AWS_ROLE_ARN      --repo $REPO --body "<GitHubDeployRoleArn output>"
-gh secret set AWS_TEST_ROLE_ARN --repo $REPO --body "<GitHubTestRoleArn output>"
-gh variable set AWS_REGION      --repo $REPO --body "$AWS_REGION"
-gh variable set ALARM_EMAIL     --repo $REPO --body "<team address for alarms>"
-bash scripts/github/protect_main.sh $REPO
-```
+- **Protected resources.** The database, every DynamoDB table, the photo bucket, the VPC and the subnets are
+  protected. If an update would replace one of them, the job stops before anything changes and names the property
+  that forces the replacement.
+- **Leftovers from failed runs are recovered automatically:**
+  - a `ROLLBACK_COMPLETE` stack is deleted and created again;
+  - an `UPDATE_ROLLBACK_FAILED` stack has its rollback continued first.
 
-### 1.5 First deployment
+**Credentials.** Each job assumes the role on its own, so no job runs on credentials older than one hour, the
+role's maximum session.
 
-Merge a pull request into `main`, or run the **Deploy** workflow by hand (Actions → Deploy → Run workflow). The run:
+## 3. The first run from the earlier setup
 
-1. creates every stack in order;
-2. applies the database migrations;
-3. runs the integration and smoke tests.
+The first run updates the stacks your earlier pipeline created, in place, as follows.
 
-The first run takes about 25 minutes, most of it RDS.
+**Data stack:**
 
-Afterwards:
+- **Imports** the tables that were made by hand (refresh tokens, token revocations, idempotency) and the photo bucket
+  into the stack. It uses an IMPORT change set, and the data in them is kept.
+- **Leaves the RDS instance untouched.** Its definition is the same as before, including 1-day backups in dev.
+- **Turns on point-in-time recovery** for the tables.
 
-- Confirm the SNS subscription email sent to `ALARM_EMAIL`.
-- Note the addresses:
+**IAM stack:**
+
+- **Keeps** `medislot-dev-cloudformation-execution-role`. It is the service role of the auth, api, app, monitoring
+  and dashboard stacks, and is given the permissions the new stacks need.
+- **Adds** one role per Lambda function.
+- **Removes** the unused report role.
+
+**API and app stacks:**
+
+- **Replaces the HTTP API with the REST API.** The API URL changes. The web app reads the new URL from SSM; anything
+  else that saved the old URL must be updated.
+- **Removes the single app Lambda and its routes,** and deploys the per-function Lambdas.
+
+**Web app stack:**
+
+- **Moves the instance to the doctor and patient portal.** CloudFormation stops and starts it to run the new
+  boot script.
+- **Keeps the Elastic IP,** so `DashboardUrl` does not change.
+- **Opens port 80 to everyone,** as in the architecture.
+
+**Migrations:**
+
+- **V001** creates every table of the final schema that is missing. This fixes the missing `users` table.
+- **V002** aligns tables that already existed in the old shape.
+- **V003** adds the indexes.
+- **V004** seeds the specialisations.
+
+Each guarded step checks the current state first, so a step that has already been done is skipped.
+
+**After the first green run:**
+
+- In a later PR, remove the legacy `AppLambdaRole` from `iam-stack.yaml`. It is kept for one release because the old
+  app stack still used it when this run started.
+- Confirm the alarm email subscription, if `ALARM_EMAIL` is set.
+- Open `DashboardUrl`, register a doctor, add consultation types and weekly availability, then register a patient
+  and browse that doctor's slots:
 
   ```bash
-  aws cloudformation describe-stacks --stack-name medislot-dev-api --query "Stacks[0].Outputs" --output table
   aws cloudformation describe-stacks --stack-name medislot-dev-dashboard --query "Stacks[0].Outputs" --output table
+  aws cloudformation describe-stacks --stack-name medislot-dev-api --query "Stacks[0].Outputs" --output table
   ```
 
-- Open the `DashboardUrl`. Register a doctor, add consultation types and weekly availability, then register a
-  patient and browse that doctor's slots.
-
-## 2. One-time move from the earlier setup (the dev account as it was before this change)
-
-The earlier pipeline used a hand-made OIDC role, a hand-made artifacts bucket and a CloudFormation execution role
-in the IAM stack. Several tables and the photo bucket were made by hand. Moving over:
-
-1. **Bootstrap stack.** Step 1.2 with `CreateOidcProvider=false`, because the provider already exists.
-2. **Secrets.** Step 1.3. The database username, password and JWT secret already exist and are kept as they are
-   (same names), so RDS and existing logins are not affected. Only the session key for the web app is new.
-3. **GitHub.** Point `AWS_ROLE_ARN` at the new deploy role and add `AWS_TEST_ROLE_ARN`, `AWS_REGION` and
-   `ALARM_EMAIL`. Run `protect_main.sh`.
-4. **First deploy of the branch, from a shell.** The pull request that brings in the new pipeline cannot pass its
-   own integration tests against the old deployment, and the new deploy role only trusts `main`. So once, before
-   that PR is merged, run the pipeline's steps with administrator credentials:
-
-   ```bash
-   export AWS_REGION=<region> ALARM_EMAIL=<team address>
-   git switch <the feature branch>
-   pip install boto3==1.43.126 cfn-flip==1.3.0
-   bash scripts/first_deploy.sh dev
-   ```
-
-   The deploy does the following by itself:
-
-   - **Imports** the hand-made tables (refresh tokens, token revocations, idempotency) and the photo bucket into the
-     data stack (an IMPORT change set; the log lists them). Their data is kept.
-   - **Replaces the HTTP API** with the REST API. The API URL changes; the web app picks up the new one from SSM.
-     Any API URL saved elsewhere must be updated.
-   - **Removes** the earlier single app Lambda and its routes, and deploys the per-function Lambdas.
-   - **Moves the web app instance** to the doctor and patient portal. The change set log shows whether the
-     instance is updated or replaced. Either way the Elastic IP stays, so `DashboardUrl` does not change.
-   - **Migrates the database.** V001 only creates tables that are missing (`CREATE TABLE IF NOT EXISTS`). V002
-     aligns the existing tables with the final schema. V003 adds the indexes and V004 seeds the specialisations.
-     Each guarded step checks the current state first, so a step that has already been done is skipped.
-
-   Then re-run the PR's **Integration tests** check. It now tests the branch's own deployment. After review, merge.
-   The pipeline on `main` redeploys the same packages, which changes nothing, and runs every test again.
-5. **Clean up** after a green deploy:
-   - Delete the old OIDC deploy role.
-   - Delete the old artifacts bucket (empty it first).
-   - In a later PR, remove the legacy `AppLambdaRole` from `iam-stack.yaml`. It is kept for one release because the
-     old app stack was using it when the first deploy started.
-
-## 3. Everyday operations
+## 4. Everyday operations
 
 | Task | How |
 |---|---|
 | Deploy a change | Branch, PR, review, merge. Never commit to `main`. |
-| See what a deploy changed | The Deploy run log lists every change set entry (action, resource, replacement). |
+| See what a deploy changed | Each Deploy … Stack job's log lists every change set entry (action, resource, replacement). |
 | Rebuild one doctor's slots now | `aws lambda invoke --function-name medislot-dev-slot-materialiser --cli-binary-format raw-in-base64-out --payload '{"doctorId":"<id>"}' out.json && cat out.json` |
 | Rebuild everyone's slots | the same with `--payload '{}'`; the result lists created, existing, removed and kept counts per doctor |
 | Migration status | invoke `medislot-dev-db-migrate` with `{"action":"status"}` |
@@ -131,35 +133,29 @@ in the IAM stack. Several tables and the photo bucket were made by hand. Moving 
 | Change a business rule (refund tiers, windows, limits) | Edit `infrastructure/config-stack.yaml` in a PR. Lambdas cache config for the life of a container, at most a few minutes under steady traffic. |
 | Web app logs | EC2 → instance → Connect (Session Manager), then `journalctl -u medislot-web -n 200` |
 
-## 4. Recovery
+## 5. Recovery
 
-### A stack is ROLLBACK_COMPLETE
+### A deploy job failed
 
-A first create failed, and an empty stack is left that can only be deleted. The deploy role cannot delete stacks
-on purpose, so this is done by hand:
+CloudFormation rolls the stack back by itself, and the jobs after it do not run. The job log shows the failed
+resources and the reason (`::error::` lines). Fix the cause in a PR and merge it; the next run carries on from
+whatever state the stack is in:
 
-```bash
-aws cloudformation describe-stack-events --stack-name <stack> \
-  --query "StackEvents[?contains(ResourceStatus,'FAILED')].[LogicalResourceId,ResourceStatusReason]" --output table
-aws cloudformation delete-stack --stack-name <stack> \
-  --role-arn "$(aws cloudformation describe-stacks --stack-name medislot-bootstrap --query "Stacks[0].Outputs[?OutputKey=='CloudFormationExecutionRoleArn'].OutputValue | [0]" --output text)"
-```
-
-Fix the cause in a PR, then re-run the pipeline.
-
-### An update failed
-
-The stack rolls back by itself, and the pipeline stops before the next stack. Read the failed events (above), fix
-the cause in a PR and merge it. If a stack is `UPDATE_ROLLBACK_FAILED`, continue the rollback in the console and
-skip only the resource named in the error.
+- A stack whose first create failed (`ROLLBACK_COMPLETE`) is deleted and created again.
+- A stack whose rollback failed (`UPDATE_ROLLBACK_FAILED`) has its rollback continued first. If the rollback
+  cannot finish on its own, the job says so. Then, in the CloudFormation console, choose Stack actions → Continue
+  update rollback, skip only the resource named in the error, and re-run the workflow.
+- If an update would replace a protected resource (the database, a table, the photo bucket, the VPC or a subnet),
+  the job stops before changing anything. It names the property that differs between the template and what is
+  deployed. Make the template match the deployed value.
 
 ### Bad data after a migration
 
-Migrations only move forward. Restore to a point in time from the RDS automated backups, which are kept 7 days, into
+Migrations only move forward. Restore to a point in time from the RDS automated backups (kept 1 day in dev, 7 in prod) into
 a new instance. Check the data, then plan the switch as its own change. DynamoDB tables have point-in-time recovery
 for 35 days.
 
-## 5. Planned maintenance
+## 6. Planned maintenance
 
 ### Upgrade RDS MySQL 8.0 to 8.4
 
@@ -194,22 +190,22 @@ so the stacks that import the endpoint are not affected:
    - Restore `<snap>-enc` with the **same identifier**, the stack's DB subnet group and the RDS security group.
    - Wait until it is available.
 5. PR: put `MediSlotMySQL` back with `StorageEncrypted: true` and the `!GetAtt` outputs. Add
-   `--import MediSlotMySQL` to the Data step in `deploy.yml`. Merge; the pipeline imports the restored instance.
-   In a follow-up PR, remove the `--import` flag and the checkov skip.
+   `--import MediSlotMySQL` to the Data step in `.github/workflows/deploy.yaml`. Merge; the pipeline imports the
+   restored instance. In a follow-up PR, remove the `--import` flag and the checkov skip.
 
 A new environment should start with `StorageEncrypted: true`.
 
-## 6. Tear down an environment
+## 7. Tear down an environment
+
+The stacks deployed through the execution role are deleted first, while the iam stack (which owns that role) still
+exists.
 
 ```bash
-for s in api dashboard monitoring jobs app auth iam config; do
-  aws cloudformation delete-stack --stack-name medislot-dev-$s
-  aws cloudformation wait stack-delete-complete --stack-name medislot-dev-$s
+for s in api dashboard monitoring jobs app auth config iam data network; do
+  aws cloudformation delete-stack --stack-name "medislot-dev-$s"
+  aws cloudformation wait stack-delete-complete --stack-name "medislot-dev-$s"
 done
-aws cloudformation delete-stack --stack-name medislot-dev-data     # RDS leaves a final snapshot; tables and the photo bucket are retained
-aws cloudformation wait stack-delete-complete --stack-name medislot-dev-data
-aws cloudformation delete-stack --stack-name medislot-dev-network
 ```
 
-Retained resources (DynamoDB tables, the photo bucket, the RDS final snapshot) and the SSM SecureStrings must be
-deleted by hand if they are no longer wanted. Delete `medislot-bootstrap` last, after emptying the artifacts bucket.
+The data stack leaves a final RDS snapshot and keeps the DynamoDB tables and the photo bucket (Retain). Delete
+these, the SSM SecureStrings and the artifacts bucket by hand if they are no longer wanted.
