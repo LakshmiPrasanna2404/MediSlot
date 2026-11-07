@@ -100,33 +100,26 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-          role-duration-seconds: 3600
-      - name: Create or reuse artifact bucket
+      - name: Create or reuse artifact bucket (no bootstrap stack)
         id: artifacts
         shell: bash
         run: |
           set -euo pipefail
-          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
-          BUCKET="medislot-artifacts-${ACCOUNT_ID}-${AWS_REGION}"
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          BUCKET="medislot-${ENVIRONMENT}-${ACCOUNT}-${AWS_REGION}-artifacts"
           if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
             echo "Reusing artifact bucket: $BUCKET"
           else
-            echo "Creating artifact bucket: $BUCKET"
             if [[ "$AWS_REGION" == "us-east-1" ]]; then
               aws s3api create-bucket --bucket "$BUCKET" --region "$AWS_REGION"
             else
               aws s3api create-bucket --bucket "$BUCKET" --region "$AWS_REGION" \
-                --create-bucket-configuration "LocationConstraint=${AWS_REGION}"
+                --create-bucket-configuration LocationConstraint="$AWS_REGION"
             fi
           fi
-          aws s3api put-public-access-block --bucket "$BUCKET" \
-            --public-access-block-configuration \
-            BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
-          aws s3api put-bucket-encryption --bucket "$BUCKET" \
-            --server-side-encryption-configuration \
-            '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
-          aws s3api put-bucket-versioning --bucket "$BUCKET" \
-            --versioning-configuration Status=Enabled
+          aws s3api put-public-access-block --bucket "$BUCKET" --public-access-block-configuration BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+          aws s3api put-bucket-encryption --bucket "$BUCKET" --server-side-encryption-configuration '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+          aws s3api put-bucket-versioning --bucket "$BUCKET" --versioning-configuration Status=Enabled
           echo "bucket=$BUCKET" >> "$GITHUB_OUTPUT"
       - name: RDS certificate bundle (TLS to MySQL is verified against it)
         run: |
@@ -200,13 +193,11 @@ jobs:
           --param S3PrefixListId=${{ steps.prefix.outputs.s3 }}
           --param DynamoDBPrefixListId=${{ steps.prefix.outputs.dynamodb }}
 
-      - name: Data (imports tables and buckets that were created by hand, once)
+      - name: Data (uses existing DynamoDB tables and doctor-files bucket)
         run: >-
           python scripts/cfn_deploy.py --stack "medislot-${ENVIRONMENT}-data" --template infrastructure/data-stack.yaml
           --bucket "$BUCKET" --tag "Environment=${ENVIRONMENT}"
           --param "Environment=${ENVIRONMENT}"
-          --import RefreshTokensTable --import TokenRevocationsTable --import IdempotencyTable
-          --import DoctorProfileFilesBucket
 
       - name: Config
         run: >-
