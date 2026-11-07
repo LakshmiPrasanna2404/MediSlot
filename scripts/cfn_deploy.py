@@ -4,7 +4,7 @@
     python scripts/cfn_deploy.py --stack medislot-dev-network \
         --template infrastructure/network-stack.yaml \
         --param Environment=dev --param S3PrefixListId=pl-123 \
-        --role-arn <CloudFormation execution role> --bucket <artifacts bucket> \
+        --bucket <artifacts bucket> \
         [--import RefreshTokensTable --import DoctorProfileFilesBucket]
 
 1. Uploads the template to S3 (templates over 51,200 bytes must come from S3).
@@ -15,7 +15,7 @@
    to the run log, executes it and waits. A change set with no changes is
    deleted and the step passes.
 
-Every stack update goes through a change set; nothing is changed directly.
+CloudFormation change sets use the GitHub Actions assumed role credentials.\nEvery stack update goes through a change set; nothing is changed directly.
 """
 
 import argparse
@@ -98,7 +98,7 @@ def execute(cfn, stack, change_set, change_set_type):
         raise SystemExit(f"{stack}: {change_set_type} failed ({stack_status(cfn, stack)})") from None
 
 
-def make_change_set(cfn, stack, change_set_type, url, parameters, role_arn, tags, resources_to_import=None):
+def make_change_set(cfn, stack, change_set_type, url, parameters, tags, resources_to_import=None):
     name = f"{change_set_type.lower()}-{int(time.time())}"
     kwargs = {
         "StackName": stack,
@@ -107,7 +107,6 @@ def make_change_set(cfn, stack, change_set_type, url, parameters, role_arn, tags
         "TemplateURL": url,
         "Parameters": parameters,
         "Capabilities": CAPABILITIES,
-        "RoleARN": role_arn,
         "Tags": [{"Key": k, "Value": v} for k, v in tags.items()],
     }
     if resources_to_import:
@@ -148,7 +147,7 @@ def physical_exists(resource_type, identifier):
         return False
 
 
-def import_existing(cfn, stack, new_template, logical_ids, parameters, role_arn, bucket, region, tags):
+def import_existing(cfn, stack, new_template, logical_ids, parameters, bucket, region, tags):
     account = boto3.client("sts").get_caller_identity()["Account"]
     in_stack = set()
     for page in cfn.get_paginator("list_stack_resources").paginate(StackName=stack):
@@ -175,7 +174,7 @@ def import_existing(cfn, stack, new_template, logical_ids, parameters, role_arn,
     body = json.dumps(current)
     url = upload_template(bucket, stack + "-import", body, region)
     previous = [{"ParameterKey": key, "UsePreviousValue": True} for key in current.get("Parameters", {})]
-    change_set = make_change_set(cfn, stack, "IMPORT", url, previous, role_arn, tags, to_import)
+    change_set = make_change_set(cfn, stack, "IMPORT", url, previous, tags, to_import)
     if change_set["Status"] == "FAILED":
         raise SystemExit(f"Import change set failed: {change_set.get('StatusReason')}")
     print_changes(change_set)
@@ -188,7 +187,6 @@ def main():
     parser.add_argument("--template", required=True)
     parser.add_argument("--param", action="append", default=[])
     parser.add_argument("--tag", action="append", default=[])
-    parser.add_argument("--role-arn", required=True)
     parser.add_argument("--bucket", required=True, help="bucket for the uploaded template")
     parser.add_argument("--import", dest="imports", action="append", default=[],
                         help="logical ID of a resource that may already exist outside the stack")
@@ -203,13 +201,11 @@ def main():
 
     status = stack_status(cfn, args.stack)
     if status == "ROLLBACK_COMPLETE":
-        # A failed first create leaves an empty stack that can only be deleted.
-        # The deploy role has no DeleteStack permission on purpose, so this is
-        # one manual command (docs/runbook.md, "A stack is ROLLBACK_COMPLETE").
+        # A failed first create leaves an empty stack that must be cleaned up
+        # before retrying. Do not attempt to update it.
         raise SystemExit(
             f"{args.stack} is ROLLBACK_COMPLETE after a failed create. Read the failure in the stack events, "
-            f"then delete the empty stack and re-run the pipeline:\n"
-            f"  aws cloudformation delete-stack --stack-name {args.stack} --role-arn {args.role_arn}"
+            f"Delete the empty failed stack, then re-run the GitHub Actions workflow."
         )
     if status == "REVIEW_IN_PROGRESS":
         # A CREATE change set was made but never executed (it failed); the stack
@@ -219,7 +215,7 @@ def main():
         raise SystemExit(f"{args.stack} is busy ({status}); try again when it finishes")
 
     if args.imports and status:
-        import_existing(cfn, args.stack, cfn_json(body), args.imports, parameters, args.role_arn,
+        import_existing(cfn, args.stack, cfn_json(body), args.imports, parameters,
                         args.bucket, region, tags)
 
     change_set_type = "UPDATE" if status else "CREATE"
@@ -227,7 +223,7 @@ def main():
     change_set = make_change_set(
         cfn, args.stack, change_set_type, url,
         [{"ParameterKey": k, "ParameterValue": v} for k, v in parameters.items()],
-        args.role_arn, tags,
+        tags,
     )
     if change_set["Status"] == "FAILED":
         reason = change_set.get("StatusReason", "")

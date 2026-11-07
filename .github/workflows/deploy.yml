@@ -89,8 +89,7 @@ jobs:
     needs: [lint, security, unit]
     runs-on: ubuntu-latest
     outputs:
-      bucket: ${{ steps.bootstrap.outputs.bucket }}
-      role: ${{ steps.bootstrap.outputs.role }}
+      bucket: ${{ steps.artifacts.outputs.bucket }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -101,22 +100,40 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-      - name: Read bootstrap outputs (artifacts bucket, CloudFormation execution role)
-        id: bootstrap
+          role-duration-seconds: 3600
+      - name: Create or reuse artifact bucket
+        id: artifacts
+        shell: bash
         run: |
           set -euo pipefail
-          read_output() {
-            aws cloudformation describe-stacks --stack-name medislot-bootstrap \
-              --query "Stacks[0].Outputs[?OutputKey=='$1'].OutputValue | [0]" --output text
-          }
-          echo "bucket=$(read_output ArtifactsBucketName)" >> "$GITHUB_OUTPUT"
-          echo "role=$(read_output CloudFormationExecutionRoleArn)" >> "$GITHUB_OUTPUT"
+          ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+          BUCKET="medislot-artifacts-${ACCOUNT_ID}-${AWS_REGION}"
+          if aws s3api head-bucket --bucket "$BUCKET" 2>/dev/null; then
+            echo "Reusing artifact bucket: $BUCKET"
+          else
+            echo "Creating artifact bucket: $BUCKET"
+            if [[ "$AWS_REGION" == "us-east-1" ]]; then
+              aws s3api create-bucket --bucket "$BUCKET" --region "$AWS_REGION"
+            else
+              aws s3api create-bucket --bucket "$BUCKET" --region "$AWS_REGION" \
+                --create-bucket-configuration "LocationConstraint=${AWS_REGION}"
+            fi
+          fi
+          aws s3api put-public-access-block --bucket "$BUCKET" \
+            --public-access-block-configuration \
+            BlockPublicAcls=true,IgnorePublicAcls=true,BlockPublicPolicy=true,RestrictPublicBuckets=true
+          aws s3api put-bucket-encryption --bucket "$BUCKET" \
+            --server-side-encryption-configuration \
+            '{"Rules":[{"ApplyServerSideEncryptionByDefault":{"SSEAlgorithm":"AES256"}}]}'
+          aws s3api put-bucket-versioning --bucket "$BUCKET" \
+            --versioning-configuration Status=Enabled
+          echo "bucket=$BUCKET" >> "$GITHUB_OUTPUT"
       - name: RDS certificate bundle (TLS to MySQL is verified against it)
         run: |
           mkdir -p build
           curl -sSfL -o build/rds-ca-bundle.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
       - name: Build and upload Lambda and web packages
-        run: python scripts/build_lambdas.py --env "$ENVIRONMENT" --ca-bundle build/rds-ca-bundle.pem --upload "${{ steps.bootstrap.outputs.bucket }}"
+        run: python scripts/build_lambdas.py --env "$ENVIRONMENT" --ca-bundle build/rds-ca-bundle.pem --upload "${{ steps.artifacts.outputs.bucket }}"
       - run: python scripts/render_api_template.py
       - uses: actions/upload-artifact@v4
         with:
@@ -131,7 +148,6 @@ jobs:
     runs-on: ubuntu-latest
     env:
       BUCKET: ${{ needs.package.outputs.bucket }}
-      ROLE: ${{ needs.package.outputs.role }}
     steps:
       - uses: actions/checkout@v5
       - uses: actions/setup-python@v6
@@ -179,7 +195,7 @@ jobs:
       - name: Network
         run: >-
           python scripts/cfn_deploy.py --stack "medislot-${ENVIRONMENT}-network" --template infrastructure/network-stack.yaml
-          --role-arn "$ROLE" --bucket "$BUCKET" --tag "Environment=${ENVIRONMENT}"
+          --bucket "$BUCKET" --tag "Environment=${ENVIRONMENT}"
           --param "Environment=${ENVIRONMENT}"
           --param S3PrefixListId=${{ steps.prefix.outputs.s3 }}
           --param DynamoDBPrefixListId=${{ steps.prefix.outputs.dynamodb }}
@@ -187,7 +203,7 @@ jobs:
       - name: Data (imports tables and buckets that were created by hand, once)
         run: >-
           python scripts/cfn_deploy.py --stack "medislot-${ENVIRONMENT}-data" --template infrastructure/data-stack.yaml
-          --role-arn "$ROLE" --bucket "$BUCKET" --tag "Environment=${ENVIRONMENT}"
+          --bucket "$BUCKET" --tag "Environment=${ENVIRONMENT}"
           --param "Environment=${ENVIRONMENT}"
           --import RefreshTokensTable --import TokenRevocationsTable --import IdempotencyTable
           --import DoctorProfileFilesBucket
@@ -195,13 +211,13 @@ jobs:
       - name: Config
         run: >-
           python scripts/cfn_deploy.py --stack "medislot-${ENVIRONMENT}-config" --template infrastructure/config-stack.yaml
-          --role-arn "$ROLE" --bucket "$BUCKET" --tag "Environment=${ENVIRONMENT}"
+          --bucket "$BUCKET" --tag "Environment=${ENVIRONMENT}"
           --param "Environment=${ENVIRONMENT}"
 
       - name: IAM
         run: >-
           python scripts/cfn_deploy.py --stack "medislot-${ENVIRONMENT}-iam" --template infrastructure/iam-stack.yaml
-          --role-arn "$ROLE" --bucket "$BUCKET" --tag "Environment=${ENVIRONMENT}"
+          --bucket "$BUCKET" --tag "Environment=${ENVIRONMENT}"
           --param "Environment=${ENVIRONMENT}"
 
       - name: Read package keys
@@ -218,7 +234,7 @@ jobs:
       - name: Auth
         run: >-
           python scripts/cfn_deploy.py --stack "medislot-${ENVIRONMENT}-auth" --template infrastructure/auth-stack.yaml
-          --role-arn "$ROLE" --bucket "$BUCKET" --tag "Environment=${ENVIRONMENT}"
+          --bucket "$BUCKET" --tag "Environment=${ENVIRONMENT}"
           --param "Environment=${ENVIRONMENT}"
           --param "AuthCodeS3Bucket=$BUCKET" --param AuthCodeS3Key=${{ steps.keys.outputs.auth }}
           --param "AuthorizerCodeS3Bucket=$BUCKET" --param AuthorizerCodeS3Key=${{ steps.keys.outputs.authorizer }}
@@ -226,7 +242,7 @@ jobs:
       - name: App (doctor and patient Lambdas)
         run: >-
           python scripts/cfn_deploy.py --stack "medislot-${ENVIRONMENT}-app" --template infrastructure/app-stack.yaml
-          --role-arn "$ROLE" --bucket "$BUCKET" --tag "Environment=${ENVIRONMENT}"
+          --bucket "$BUCKET" --tag "Environment=${ENVIRONMENT}"
           --param "Environment=${ENVIRONMENT}" --param "CodeS3Bucket=$BUCKET"
           --param DoctorProfileCodeS3Key=${{ steps.keys.outputs.doctor-profile }}
           --param PhotoUploadCodeS3Key=${{ steps.keys.outputs.photo-upload }}
@@ -241,27 +257,27 @@ jobs:
       - name: Jobs (slot materialiser and its daily schedule)
         run: >-
           python scripts/cfn_deploy.py --stack "medislot-${ENVIRONMENT}-jobs" --template infrastructure/jobs-stack.yaml
-          --role-arn "$ROLE" --bucket "$BUCKET" --tag "Environment=${ENVIRONMENT}"
+          --bucket "$BUCKET" --tag "Environment=${ENVIRONMENT}"
           --param "Environment=${ENVIRONMENT}" --param "CodeS3Bucket=$BUCKET"
           --param SlotMaterialiserCodeS3Key=${{ steps.keys.outputs.slot-materialiser }}
 
       - name: Monitoring
         run: >-
           python scripts/cfn_deploy.py --stack "medislot-${ENVIRONMENT}-monitoring" --template infrastructure/monitoring-stack.yaml
-          --role-arn "$ROLE" --bucket "$BUCKET" --tag "Environment=${ENVIRONMENT}"
+          --bucket "$BUCKET" --tag "Environment=${ENVIRONMENT}"
           --param "Environment=${ENVIRONMENT}" --param "AlarmEmail=${{ vars.ALARM_EMAIL }}"
 
       - name: Web app (EC2)
         run: >-
           python scripts/cfn_deploy.py --stack "medislot-${ENVIRONMENT}-dashboard" --template infrastructure/dashboard-stack.yaml
-          --role-arn "$ROLE" --bucket "$BUCKET" --tag "Environment=${ENVIRONMENT}"
+          --bucket "$BUCKET" --tag "Environment=${ENVIRONMENT}"
           --param "Environment=${ENVIRONMENT}"
           --param "DashboardCodeS3Bucket=$BUCKET" --param DashboardCodeS3Key=${{ steps.keys.outputs.dashboard }}
 
       - name: API (REST API, authorizer, routes)
         run: >-
           python scripts/cfn_deploy.py --stack "medislot-${ENVIRONMENT}-api" --template build/templates/api-stack.yaml
-          --role-arn "$ROLE" --bucket "$BUCKET" --tag "Environment=${ENVIRONMENT}"
+          --bucket "$BUCKET" --tag "Environment=${ENVIRONMENT}"
           --param "Environment=${ENVIRONMENT}"
 
   migrate:
