@@ -146,7 +146,7 @@ jobs:
         with:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
-          role-duration-seconds: 7200
+          role-duration-seconds: 3600
 
       - name: Preflight - seeded secrets exist
         run: |
