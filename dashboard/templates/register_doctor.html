@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% block title %}Doctor registration · MediSlot{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Create a doctor account</h1>
+  <form method="post" class="form grid-2">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Full name <input name="full_name" value="{{ form.get('full_name', '') }}" required maxlength="120"></label>
+    <label>Email <input type="email" name="email" value="{{ form.get('email', '') }}" required></label>
+    <label>Password <input type="password" name="password" required minlength="10" autocomplete="new-password">
+      <small>At least 10 characters, with a letter and a digit.</small></label>
+    <label>Licence number <input name="licence_number" value="{{ form.get('licence_number', '') }}" required maxlength="50"></label>
+    <label>Specialisation
+      <select name="specialisation">
+        <option value="">Choose…</option>
+        {% for s in SPECIALISATIONS %}<option {{ 'selected' if form.get('specialisation') == s }}>{{ s }}</option>{% endfor %}
+      </select></label>
+    <label>Years of experience <input type="number" name="years_experience" min="0" max="80" value="{{ form.get('years_experience', '') }}"></label>
+    <label>Hospital or clinic <input name="hospital_name" value="{{ form.get('hospital_name', '') }}" maxlength="200"></label>
+    <label>Hospital city <input name="hospital_city" value="{{ form.get('hospital_city', '') }}" maxlength="100"></label>
+    <label class="span-2">Hospital address <input name="hospital_address" value="{{ form.get('hospital_address', '') }}" maxlength="255"></label>
+    <label>Qualifications <input name="qualifications" value="{{ form.get('qualifications', '') }}" maxlength="255" placeholder="MBBS, MD"></label>
+    <label>Languages spoken <input name="languages" value="{{ form.get('languages', '') }}" maxlength="100" placeholder="English, Hindi"></label>
+    <label>Time zone
+      <input name="timezone" list="timezones" value="{{ form.get('timezone', 'Asia/Kolkata') }}">
+      <datalist id="timezones">{% for tz in TIMEZONES %}<option value="{{ tz }}">{% endfor %}</datalist></label>
+    <div class="span-2"><button type="submit" class="button primary">Create account</button></div>
+  </form>
+  <p class="muted">Already registered? <a href="{{ url_for('auth.doctor_login') }}">Log in</a></p>
+</section>
+{% endblock %}

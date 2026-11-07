@@ -55,6 +55,11 @@ Resources:
   # encrypted with an AWS managed key. The messages hold alarm names and states only.
   AlarmTopic:
     Type: AWS::SNS::Topic
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_26
+            comment: 'CloudWatch alarms cannot publish to a topic encrypted with the AWS managed SNS key, and customer-managed keys are not allowed. Messages hold alarm names and states only.'
     Properties:
       TopicName: !Sub medislot-${Environment}-alarms
       DisplayName: !Sub MediSlot ${Environment} alarms
@@ -100,18 +105,17 @@ Resources:
       Protocol: email
       Endpoint: !Ref AlarmEmail
 
+  # REST API metrics use the ApiName dimension (5XXError, 4XXError, Count, Latency).
   Api5xxAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub medislot-${Environment}-api-5xx
-      AlarmDescription: The API returned server errors. Check the Lambda logs.
+      AlarmDescription: The API returned server errors. Check the Lambda logs for the correlation ID.
       Namespace: AWS/ApiGateway
-      MetricName: 5xx
+      MetricName: 5XXError
       Dimensions:
-        - Name: ApiId
-          Value:
-            Fn::ImportValue:
-              Fn::Sub: medislot-${Environment}-api-id
+        - Name: ApiName
+          Value: !Sub medislot-${Environment}-api
       Statistic: Sum
       Period: 300
       EvaluationPeriods: 1
@@ -184,18 +188,117 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  # One alarm over every application function (the authorizer is left out:
+  # its Errors metric counts normal 401 rejections).
   AppLambdaErrorsAlarm:
     Type: AWS::CloudWatch::Alarm
     Properties:
       AlarmName: !Sub medislot-${Environment}-lambda-app-errors
-      AlarmDescription: The app Lambda is failing.
-      Namespace: AWS/Lambda
-      MetricName: Errors
-      Dimensions:
-        - Name: FunctionName
-          Value: !Sub medislot-${Environment}-app
-      Statistic: Sum
-      Period: 300
+      AlarmDescription: An application Lambda is failing.
+      Metrics:
+        - Id: total
+          Label: Application Lambda errors
+          Expression: SUM([e0, e1, e2, e3, e4, e5, e6, e7, e8])
+          ReturnData: true
+        - Id: e0
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/Lambda
+              MetricName: Errors
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Sub medislot-${Environment}-doctor-profile
+            Period: 300
+            Stat: Sum
+        - Id: e1
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/Lambda
+              MetricName: Errors
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Sub medislot-${Environment}-photo-upload
+            Period: 300
+            Stat: Sum
+        - Id: e2
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/Lambda
+              MetricName: Errors
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Sub medislot-${Environment}-consultation-types
+            Period: 300
+            Stat: Sum
+        - Id: e3
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/Lambda
+              MetricName: Errors
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Sub medislot-${Environment}-availability
+            Period: 300
+            Stat: Sum
+        - Id: e4
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/Lambda
+              MetricName: Errors
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Sub medislot-${Environment}-schedule
+            Period: 300
+            Stat: Sum
+        - Id: e5
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/Lambda
+              MetricName: Errors
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Sub medislot-${Environment}-patient-profile
+            Period: 300
+            Stat: Sum
+        - Id: e6
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/Lambda
+              MetricName: Errors
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Sub medislot-${Environment}-doctor-search
+            Period: 300
+            Stat: Sum
+        - Id: e7
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/Lambda
+              MetricName: Errors
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Sub medislot-${Environment}-slot-lookup
+            Period: 300
+            Stat: Sum
+        - Id: e8
+          ReturnData: false
+          MetricStat:
+            Metric:
+              Namespace: AWS/Lambda
+              MetricName: Errors
+              Dimensions:
+                - Name: FunctionName
+                  Value: !Sub medislot-${Environment}-slot-materialiser
+            Period: 300
+            Stat: Sum
       EvaluationPeriods: 1
       Threshold: !Ref LambdaErrorThreshold
       ComparisonOperator: GreaterThanOrEqualToThreshold

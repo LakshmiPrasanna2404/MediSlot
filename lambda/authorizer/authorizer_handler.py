@@ -1,226 +1,128 @@
-"""MediSlot API Gateway Lambda authorizer.
+"""MediSlot Lambda authorizer (architecture box 4, TOKEN type, cache TTL 0).
 
-Validates the five-claim HS256 access JWT issued by auth_handler.py,
-checks the token-revocations DynamoDB table, and returns the IAM policy
-and authenticated user context required by API Gateway payload format 1.0.
+1. Read the JWT signing secret from SSM (SecureString) at cold start.
+2. Verify the HS256 signature (algorithm pinned) and the issuer.
+3. Check expiry.
+4. Check the jti against the token-revocations denylist in DynamoDB.
+5. Check the role is allowed on the route: a doctor-only route rejects a
+   patient token and vice versa.
+6. Return an IAM policy with userId, role, jti and exp in the context.
 
-Required environment variables:
-    JWT_SECRET_PARAMETER
-    TOKEN_REVOCATIONS_TABLE
-    ENVIRONMENT
+Outcomes:
+    bad, expired, tampered, wrongly signed or logged-out token -> 401
+    valid token, wrong role for the route                       -> 403 (Deny policy)
 
-DynamoDB schema:
-    token-revocations partition key: jti (String)
+The authorizer cache TTL is 0: with any caching a token used after logout
+would still be accepted until the cache entry expired.
 """
 
-import base64
-import hashlib
-import hmac
-import json
 import os
 import re
-import time
 
-import boto3
-from botocore.config import Config
+from medislot_common import config, logs, tokens
 
-
-REGION = os.environ.get("AWS_REGION", "us-east-1")
-ENVIRONMENT = os.environ["ENVIRONMENT"]
-
-CLIENT_CONFIG = Config(
-    connect_timeout=3,
-    read_timeout=4,
-    retries={"total_max_attempts": 2},
+# Most specific first. Paths come from the methodArn, with real values in
+# place of path parameters (/doctors/me versus /doctors/<uuid>).
+ROLE_RULES = (
+    (re.compile(r"^/auth/logout$"), frozenset({"doctor", "patient"})),
+    (re.compile(r"^/doctors/me(/.*)?$"), frozenset({"doctor"})),
+    (re.compile(r"^/patients/me(/.*)?$"), frozenset({"patient"})),
+    (re.compile(r"^/doctors(/[^/]+(/slots)?)?$"), frozenset({"patient"})),
+    (re.compile(r"^/appointments(/[^/]+)?$"), frozenset({"patient"})),
+    (re.compile(r"^/slots/[^/]+/waitlist$"), frozenset({"patient"})),
+    (re.compile(r"^/waitlist-offers/[^/]+/accept$"), frozenset({"patient"})),
 )
 
-SSM = boto3.client("ssm", region_name=REGION, config=CLIENT_CONFIG)
-DDB = boto3.resource("dynamodb", region_name=REGION, config=CLIENT_CONFIG)
 
-JWT_SECRET_PARAMETER = os.environ["JWT_SECRET_PARAMETER"]
-TOKEN_REVOCATIONS_TABLE = DDB.Table(os.environ["TOKEN_REVOCATIONS_TABLE"])
-
-_secret_cache = None
-
-
-def secret():
-    """Load the JWT signing secret from SSM SecureString once per container."""
-    global _secret_cache
-
-    if _secret_cache is None:
-        result = SSM.get_parameter(
-            Name=JWT_SECRET_PARAMETER,
-            WithDecryption=True,
-        )
-        value = result.get("Parameter", {}).get("Value")
-
-        if not isinstance(value, str) or len(value.encode("utf-8")) < 32:
-            raise RuntimeError("JWT signing secret must be at least 32 bytes")
-
-        _secret_cache = value.encode("utf-8")
-
-    return _secret_cache
+def allowed_roles(path):
+    for pattern, roles in ROLE_RULES:
+        if pattern.match(path):
+            return roles
+    return frozenset()
 
 
-def b64url_decode(value):
-    """Decode a strictly formatted base64url JWT segment."""
-    if not isinstance(value, str) or not value:
-        raise ValueError("Invalid JWT segment")
-
-    if not re.fullmatch(r"[A-Za-z0-9_-]+", value):
-        raise ValueError("Invalid base64url characters")
-
-    padded = value + ("=" * (-len(value) % 4))
-    return base64.b64decode(
-        padded.encode("ascii"),
-        altchars=b"-_",
-        validate=True,
-    )
-
-
-def decode(token):
-    """Return valid access-token claims, or None when the token is invalid."""
-    if not isinstance(token, str) or not token:
-        return None
-
+def path_from_method_arn(method_arn):
+    """arn:aws:execute-api:region:account:apiId/stage/METHOD/res/path -> /res/path"""
     try:
-        parts = token.split(".")
-        if len(parts) != 3:
-            return None
-
-        header_part, payload_part, signature_part = parts
-        header = json.loads(b64url_decode(header_part))
-        claims = json.loads(b64url_decode(payload_part))
-
-        if not isinstance(header, dict) or not isinstance(claims, dict):
-            return None
-
-        if header.get("alg") != "HS256" or header.get("typ") != "JWT":
-            return None
-
-        expected_signature = base64.urlsafe_b64encode(
-            hmac.new(
-                secret(),
-                f"{header_part}.{payload_part}".encode("ascii"),
-                hashlib.sha256,
-            ).digest()
-        ).rstrip(b"=").decode("ascii")
-
-        if not hmac.compare_digest(expected_signature, signature_part):
-            return None
-
-        if set(claims.keys()) != {"sub", "role", "iat", "exp", "jti"}:
-            return None
-
-        subject = claims.get("sub")
-        role = claims.get("role")
-        token_id = claims.get("jti")
-        issued_at = claims.get("iat")
-        expires_at = claims.get("exp")
-
-        if not isinstance(subject, str) or not subject.strip():
-            return None
-        if not isinstance(token_id, str) or not token_id.strip():
-            return None
-        if role not in ("patient", "doctor"):
-            return None
-        if type(issued_at) is not int or type(expires_at) is not int:
-            return None
-
-        now = int(time.time())
-        if issued_at > now or expires_at <= now or expires_at <= issued_at:
-            return None
-
-        return claims
-
-    except Exception:
-        # Fail closed; do not expose token contents or signing secrets.
-        return None
+        resource = method_arn.split(":", 5)[5]
+        parts = resource.split("/")
+        return "/" + "/".join(parts[3:])
+    except (AttributeError, IndexError):
+        return ""
 
 
-def build_policy(principal_id, effect, resource, claims=None):
-    """Build an API Gateway IAM policy response for payload format 1.0."""
+def policy(principal_id, effect, method_arn, context=None):
     result = {
-        "principalId": str(principal_id),
+        "principalId": principal_id,
         "policyDocument": {
             "Version": "2012-10-17",
-            "Statement": [
-                {
-                    "Action": "execute-api:Invoke",
-                    "Effect": effect,
-                    "Resource": resource,
-                }
-            ],
+            "Statement": [{"Action": "execute-api:Invoke", "Effect": effect, "Resource": method_arn}],
         },
     }
-
-    if claims is not None:
-        result["context"] = {
-            "userId": claims["sub"],
-            "role": claims["role"],
-        }
-
+    if context:
+        result["context"] = context
     return result
 
 
-def unauthorized():
-    """API Gateway maps this Lambda authorizer exception to HTTP 401."""
-    raise Exception("Unauthorized")
+def reject(reason):
+    """API Gateway turns this exact exception message into 401 Unauthorized."""
+    logs.metric("TokenValidationRejections", Reason=reason)
+    logs.info("token rejected", reason=reason)
+    raise Exception("Unauthorized")  # noqa: TRY002 - the message is the API Gateway contract
+
+
+def bearer_token(event):
+    value = event.get("authorizationToken")
+    if value is None:
+        headers = {str(k).lower(): v for k, v in (event.get("headers") or {}).items()}
+        value = headers.get("authorization")
+    if not isinstance(value, str):
+        return None
+    parts = value.strip().split(None, 1)
+    if len(parts) != 2 or parts[0].lower() != "bearer" or not parts[1].strip():
+        return None
+    return parts[1].strip()
+
+
+def signing_secret():
+    secret = config.get_parameter(os.environ["JWT_SECRET_PARAMETER"], decrypt=True).encode("utf-8")
+    if len(secret) < 32:
+        raise RuntimeError("JWT signing secret must be at least 32 bytes")
+    return secret
+
+
+def issuer():
+    return config.get_parameter(f"/medislot/{config.environment()}/auth/jwt-issuer")
 
 
 def lambda_handler(event, context):
-    """Authenticate the bearer token and check its revocation status."""
-    if not isinstance(event, dict):
-        unauthorized()
-
-    # HTTP API Lambda authorizer payload format 1.0 supplies methodArn.
-    resource = event.get("methodArn")
-    if not isinstance(resource, str) or not resource:
-        unauthorized()
-
-    event_headers = event.get("headers") or {}
-    if not isinstance(event_headers, dict):
-        unauthorized()
-
-    headers = {
-        str(key).lower(): value
-        for key, value in event_headers.items()
-    }
-
-    authorization = headers.get("authorization")
-    if not isinstance(authorization, str):
-        unauthorized()
-
-    parts = authorization.strip().split(None, 1)
-    if (
-        len(parts) != 2
-        or parts[0].lower() != "bearer"
-        or not parts[1].strip()
-    ):
-        unauthorized()
-
-    claims = decode(parts[1].strip())
-    if claims is None:
-        unauthorized()
+    logs.set_correlation_id(getattr(context, "aws_request_id", None), getattr(context, "aws_request_id", None))
+    method_arn = event.get("methodArn") or ""
+    token = bearer_token(event)
+    if not token or not method_arn:
+        reject("missing")
+    try:
+        claims = tokens.verify(token, signing_secret(), issuer())
+    except tokens.InvalidToken as exc:
+        reject(str(exc))
 
     try:
-        result = TOKEN_REVOCATIONS_TABLE.get_item(
-            Key={"jti": claims["jti"]},
-            ConsistentRead=True,
-        )
+        revoked = config.table("TOKEN_REVOCATIONS_TABLE").get_item(Key={"jti": claims["jti"]}, ConsistentRead=True).get("Item")
+    except Exception:  # noqa: BLE001 - fail closed if the denylist cannot be read
+        logs.exception("revocation lookup failed")
+        reject("denylist_unavailable")
+    if revoked:
+        reject("revoked")
 
-        if result.get("Item"):
-            unauthorized()
+    path = path_from_method_arn(method_arn)
+    if claims["role"] not in allowed_roles(path):
+        logs.metric("TokenValidationRejections", Reason="wrong_role")
+        logs.info("role not allowed on route", role=claims["role"], path=path)
+        return policy(claims["sub"], "Deny", method_arn)
 
-    except Exception as exc:
-        if str(exc) == "Unauthorized":
-            raise
-        print(f"Revocation lookup failed: {type(exc).__name__}")
-        unauthorized()
-
-    return build_policy(
-        principal_id=claims["sub"],
-        effect="Allow",
-        resource=resource,
-        claims=claims,
+    return policy(
+        claims["sub"],
+        "Allow",
+        method_arn,
+        {"userId": claims["sub"], "role": claims["role"], "jti": claims["jti"], "exp": str(claims["exp"])},
     )

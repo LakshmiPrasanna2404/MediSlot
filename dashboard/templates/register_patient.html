@@ -1,0 +1,27 @@
+{% extends "base.html" %}
+{% block title %}Patient registration · MediSlot{% endblock %}
+{% block content %}
+<section class="card">
+  <h1>Create a patient account</h1>
+  <form method="post" class="form grid-2">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Full name <input name="full_name" value="{{ form.get('full_name', '') }}" required maxlength="120"></label>
+    <label>Email <input type="email" name="email" value="{{ form.get('email', '') }}" required></label>
+    <label>Password <input type="password" name="password" required minlength="10" autocomplete="new-password">
+      <small>At least 10 characters, with a letter and a digit.</small></label>
+    <label>Date of birth <input type="date" name="date_of_birth" value="{{ form.get('date_of_birth', '') }}"></label>
+    <label>Gender
+      <select name="gender">
+        <option value="">Prefer not to say</option>
+        {% for g in ['female', 'male', 'other'] %}<option value="{{ g }}" {{ 'selected' if form.get('gender') == g }}>{{ g|title }}</option>{% endfor %}
+      </select></label>
+    <label>Phone <input name="phone" value="{{ form.get('phone', '') }}" maxlength="20"></label>
+    <label>City <input name="city" value="{{ form.get('city', '') }}" maxlength="100"></label>
+    <label>Address <input name="address" value="{{ form.get('address', '') }}" maxlength="255"></label>
+    <label>Emergency contact name <input name="emergency_contact_name" value="{{ form.get('emergency_contact_name', '') }}" maxlength="100"></label>
+    <label>Emergency contact phone <input name="emergency_contact_phone" value="{{ form.get('emergency_contact_phone', '') }}" maxlength="20"></label>
+    <div class="span-2"><button type="submit" class="button primary">Create account</button></div>
+  </form>
+  <p class="muted">Already registered? <a href="{{ url_for('auth.patient_login') }}">Log in</a></p>
+</section>
+{% endblock %}

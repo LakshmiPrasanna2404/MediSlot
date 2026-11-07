@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Profile · MediSlot{% endblock %}
+{% block content %}
+<h1>Your profile</h1>
+<div class="columns">
+  <section class="card photo-card">
+    {% if profile.photo_url %}
+      <img src="{{ profile.photo_url }}" alt="Profile photo" class="avatar" onerror="this.style.display='none'">
+    {% else %}
+      <div class="avatar placeholder">{{ profile.full_name[:1] }}</div>
+    {% endif %}
+    <form id="photo-form" class="form">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>New photo (JPEG, PNG or WebP, up to 5 MB)
+        <input type="file" id="photo-file" accept="image/jpeg,image/png,image/webp" required></label>
+      <button type="submit" class="button">Upload photo</button>
+      <p id="photo-status" class="muted"></p>
+    </form>
+    <dl class="facts">
+      <dt>Licence</dt><dd>{{ profile.licence_number }}</dd>
+      <dt>Email</dt><dd>{{ profile.email }}</dd>
+    </dl>
+  </section>
+
+  <section class="card grow">
+    <form method="post" class="form grid-2">
+      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+      <label>Full name <input name="full_name" value="{{ profile.full_name }}" required maxlength="120"></label>
+      <label>Specialisation
+        <select name="specialisation">
+          {% if not profile.specialisation %}<option value="">Choose…</option>{% endif %}
+          {% for s in SPECIALISATIONS %}<option {{ 'selected' if profile.specialisation == s }}>{{ s }}</option>{% endfor %}
+        </select></label>
+      <label>Hospital or clinic <input name="hospital_name" value="{{ profile.hospital.name if profile.hospital else '' }}" maxlength="200"></label>
+      <label>Hospital city <input name="hospital_city" value="{{ profile.hospital.city if profile.hospital else '' }}" maxlength="100"></label>
+      <label class="span-2">Hospital address <input name="hospital_address" value="{{ profile.hospital.address if profile.hospital and profile.hospital.address else '' }}" maxlength="255"></label>
+      <label>Years of experience <input type="number" name="years_experience" min="0" max="80" value="{{ profile.years_experience if profile.years_experience is not none else '' }}"></label>
+      <label>Qualifications <input name="qualifications" value="{{ profile.qualifications or '' }}" maxlength="255"></label>
+      <label>Languages spoken <input name="languages" value="{{ profile.languages or '' }}" maxlength="100"></label>
+      <label>Time zone
+        <input name="timezone" list="timezones" value="{{ profile.timezone }}">
+        <datalist id="timezones">{% for tz in TIMEZONES %}<option value="{{ tz }}">{% endfor %}</datalist>
+        <small>Your weekly availability is in this zone. Changing it moves your future open slots.</small></label>
+      <div class="span-2"><button type="submit" class="button primary">Save profile</button></div>
+    </form>
+  </section>
+</div>
+{% endblock %}
+{% block scripts %}
+<script>
+  window.MEDISLOT_PHOTO_URL = "{{ url_for('doctor.photo_upload') }}";
+</script>
+<script src="{{ url_for('static', filename='photo.js') }}"></script>
+{% endblock %}

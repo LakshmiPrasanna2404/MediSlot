@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{% block title %}MediSlot{% endblock %}</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
+</head>
+<body class="{% block body_class %}{% endblock %}">
+  <header class="topbar">
+    <a class="brand" href="{{ url_for('auth.landing') }}"><span class="brand-mark">+</span> MediSlot</a>
+    {% if session_role == 'doctor' %}
+      <nav class="nav">
+        <a href="{{ url_for('doctor.schedule') }}" class="{{ 'active' if request.endpoint == 'doctor.schedule' }}">Schedule</a>
+        <a href="{{ url_for('doctor.availability') }}" class="{{ 'active' if request.endpoint == 'doctor.availability' }}">Availability</a>
+        <a href="{{ url_for('doctor.blackouts') }}" class="{{ 'active' if request.endpoint == 'doctor.blackouts' }}">Blackouts</a>
+        <a href="{{ url_for('doctor.consultation_types') }}" class="{{ 'active' if request.endpoint == 'doctor.consultation_types' }}">Consultation types</a>
+        <a href="{{ url_for('doctor.profile') }}" class="{{ 'active' if request.endpoint == 'doctor.profile' }}">Profile</a>
+      </nav>
+    {% elif session_role == 'patient' %}
+      <nav class="nav">
+        <a href="{{ url_for('patient.search') }}" class="{{ 'active' if request.endpoint in ('patient.search', 'patient.doctor') }}">Find a doctor</a>
+        <a href="{{ url_for('patient.profile') }}" class="{{ 'active' if request.endpoint == 'patient.profile' }}">Profile</a>
+      </nav>
+    {% endif %}
+    {% if session_role %}
+      <form method="post" action="{{ url_for('auth.logout') }}" class="logout">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+        <span class="who">{{ session_name }} <span class="role-tag">{{ session_role }}</span></span>
+        <button type="submit" class="link-button">Log out</button>
+      </form>
+    {% endif %}
+  </header>
+
+  <main class="page">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% for category, message in messages %}
+        <div class="flash flash-{{ category }}">{{ message }}</div>
+      {% endfor %}
+    {% endwith %}
+    {% block content %}{% endblock %}
+  </main>
+  {% block scripts %}{% endblock %}
+</body>
+</html>

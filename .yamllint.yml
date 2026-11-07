@@ -1,0 +1,9 @@
+extends: relaxed
+ignore: |
+  build/
+  .venv/
+  infrastructure/network-stack.yaml.backup
+rules:
+  line-length: disable
+  truthy:
+    allowed-values: ['true', 'false', 'on']

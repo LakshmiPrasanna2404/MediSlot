@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Profile · MediSlot{% endblock %}
+{% block content %}
+<h1>Your profile</h1>
+<section class="card">
+  <form method="post" class="form grid-2">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Full name <input name="full_name" value="{{ profile.full_name }}" required maxlength="120"></label>
+    <label>Email <input value="{{ profile.email }}" disabled></label>
+    <label>Date of birth <input type="date" name="date_of_birth" value="{{ profile.date_of_birth or '' }}"></label>
+    <label>Gender
+      <select name="gender">
+        <option value="">Prefer not to say</option>
+        {% for g in ['female', 'male', 'other'] %}<option value="{{ g }}" {{ 'selected' if profile.gender == g }}>{{ g|title }}</option>{% endfor %}
+      </select></label>
+    <label>Phone <input name="phone" value="{{ profile.phone or '' }}" maxlength="20"></label>
+    <label>City <input name="city" value="{{ profile.city or '' }}" maxlength="100"></label>
+    <label class="span-2">Address <input name="address" value="{{ profile.address or '' }}" maxlength="255"></label>
+    <label>Emergency contact name <input name="emergency_contact_name" value="{{ profile.emergency_contact_name or '' }}" maxlength="100"></label>
+    <label>Emergency contact phone <input name="emergency_contact_phone" value="{{ profile.emergency_contact_phone or '' }}" maxlength="20"></label>
+    <div class="span-2"><button type="submit" class="button primary">Save profile</button></div>
+  </form>
+</section>
+<section class="card danger-zone">
+  <h2>Delete account</h2>
+  <p class="muted">Not possible while you have upcoming appointments. Past appointments are kept for the record.</p>
+  <form method="post" action="{{ url_for('patient.delete_account') }}" onsubmit="return confirm('Delete your MediSlot account?');">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <button type="submit" class="button danger">Delete my account</button>
+  </form>
+</section>
+{% endblock %}

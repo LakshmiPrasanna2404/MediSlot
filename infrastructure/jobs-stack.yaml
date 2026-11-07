@@ -1,0 +1,116 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  MediSlot scheduled jobs. The slot materialiser Lambda and its daily EventBridge Scheduler schedule. (Offer expiry, reminder and no-show jobs join this stack in Milestone 6.)
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues:
+      - dev
+      - prod
+    Description: Deployment environment
+
+  CodeS3Bucket:
+    Type: String
+    Description: Artifacts bucket holding the Lambda packages
+
+  SlotMaterialiserCodeS3Key:
+    Type: String
+    Description: S3 key of the slot-materialiser package (content-addressed, built by scripts/build_lambdas.py)
+
+  LogRetentionDays:
+    Type: Number
+    Default: 30
+    AllowedValues: [7, 14, 30, 60, 90]
+    Description: CloudWatch log retention period
+
+  MaterialiserScheduleExpression:
+    Type: String
+    Default: cron(15 0 * * ? *)
+    Description: When the daily materialiser runs (UTC). Each doctor's window is computed in their own time zone.
+
+Resources:
+  SlotMaterialiserLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-slot-materialiser
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  SlotMaterialiserFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: SlotMaterialiserLogGroup
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-slot-materialiser
+      Description: 'Slot Materialiser: rolls the 30-day slot window forward (daily)'
+      Runtime: python3.12
+      Handler: handler.lambda_handler
+      Role: !ImportValue
+        Fn::Sub: medislot-${Environment}-slot-materialiser-role-arn
+      Timeout: 300
+      MemorySize: 512
+      Architectures: [x86_64]
+      Code:
+        S3Bucket: !Ref CodeS3Bucket
+        S3Key: !Ref SlotMaterialiserCodeS3Key
+      VpcConfig:
+        SubnetIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az1-id
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az2-id
+        SecurityGroupIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-sg-id
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          DB_HOST: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-endpoint
+          DB_PORT: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-port
+          DB_NAME: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-name
+          DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/db/username
+          DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
+          SLOTS_TABLE: !ImportValue
+            Fn::Sub: medislot-${Environment}-slots-table-name
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Daily run. Re-running is harmless (conditional puts), so retries are safe.
+  SlotMaterialiserSchedule:
+    Type: AWS::Scheduler::Schedule
+    Properties:
+      Name: !Sub medislot-${Environment}-slot-materialiser-daily
+      Description: Roll the slot booking window forward by one day
+      ScheduleExpression: !Ref MaterialiserScheduleExpression
+      ScheduleExpressionTimezone: UTC
+      FlexibleTimeWindow:
+        Mode: 'OFF'
+      State: ENABLED
+      Target:
+        Arn: !GetAtt SlotMaterialiserFunction.Arn
+        RoleArn: !ImportValue
+          Fn::Sub: medislot-${Environment}-scheduler-invoke-role-arn
+        Input: '{}'
+        RetryPolicy:
+          MaximumRetryAttempts: 3
+          MaximumEventAgeInSeconds: 3600
+
+Outputs:
+  SlotMaterialiserFunctionArn:
+    Value: !GetAtt SlotMaterialiserFunction.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-slot-materialiser-function-arn
+  SlotMaterialiserFunctionName:
+    Value: !Ref SlotMaterialiserFunction
+    Export:
+      Name: !Sub medislot-${Environment}-slot-materialiser-function-name

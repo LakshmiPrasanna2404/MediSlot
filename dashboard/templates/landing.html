@@ -1,0 +1,22 @@
+{% extends "base.html" %}
+{% block body_class %}landing{% endblock %}
+{% block content %}
+<section class="hero">
+  <h1>Book a doctor without the phone queue.</h1>
+  <p class="lead">MediSlot shows real availability, holds your seat the moment you book, and keeps doctors' schedules in one place.</p>
+  {% if session_role %}
+    <a class="button primary" href="{{ url_for('doctor.schedule' if session_role == 'doctor' else 'patient.search') }}">Continue to your dashboard</a>
+  {% else %}
+    <div class="choices">
+      <a class="choice" href="{{ url_for('auth.patient_login') }}">
+        <span class="choice-title">Login as Patient</span>
+        <span class="choice-text">Find doctors, browse open slots, manage your profile.</span>
+      </a>
+      <a class="choice" href="{{ url_for('auth.doctor_login') }}">
+        <span class="choice-title">Login as Doctor</span>
+        <span class="choice-text">Set weekly availability, consultation types and see your day.</span>
+      </a>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}

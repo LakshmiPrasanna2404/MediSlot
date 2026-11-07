@@ -16,14 +16,6 @@ Parameters:
     Default: 10.0.0.0/16
     Description: CIDR block for the MediSlot VPC.
 
-  SSHAllowedCidr:
-    Type: String
-    Default: 127.0.0.1/32
-    AllowedPattern: '^(?:[0-9]{1,3}\.){3}[0-9]{1,3}/(?:[0-9]|[12][0-9]|3[0-2])$'
-    Description: >-
-      Public IPv4 CIDR allowed to SSH to the EC2 instance. Set to your current
-      public IP with /32 when deploying. The loopback default keeps SSH closed.
-
   PublicSubnetCidr:
     Type: String
     Default: 10.0.1.0/24
@@ -90,8 +82,10 @@ Parameters:
 
   EnableCloudWatchLogsEndpoint:
     Type: String
-    Description: CloudWatch Logs interface endpoint for VPC-connected Lambda logging without NAT.
-    Default: 'true'
+    Description: >-
+      CloudWatch Logs interface endpoint. Not needed for Lambda logs (the Lambda
+      service ships them outside the VPC); only for code that calls the Logs API.
+    Default: 'false'
     AllowedValues:
       - 'true'
       - 'false'
@@ -130,7 +124,9 @@ Parameters:
 
   EnableSQSEndpoint:
     Type: String
-    Description: SQS interface endpoint for Lambdas that send to queues (needed from Milestone 6).
+    Description: >-
+      SQS interface endpoint. Not used by the current design: EventBridge rules
+      invoke Lambda directly, with no queue in between. Leave false.
     Default: 'false'
     AllowedValues:
       - 'true'
@@ -461,7 +457,14 @@ Resources:
   # Gateway endpoint and S3 over HTTPS. It has no path to RDS.
   EC2SecurityGroup:
     Type: AWS::EC2::SecurityGroup
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_260
+            comment: 'The architecture serves the web app on HTTP 80 to the internet. No other port is open.'
     Properties:
+      # Description kept as originally deployed: changing it replaces the group.
+      # Rules: HTTP 80 from the internet only. No SSH, no route or rule to RDS.
       GroupDescription: HTTP access to the MediSlot Flask web server
       VpcId: !Ref MediSlotVPC
       SecurityGroupIngress:
@@ -470,11 +473,6 @@ Resources:
           FromPort: 80
           ToPort: 80
           CidrIp: 0.0.0.0/0
-        - Description: SSH only from the operator-supplied public IP range
-          IpProtocol: tcp
-          FromPort: 22
-          ToPort: 22
-          CidrIp: !Ref SSHAllowedCidr
       SecurityGroupEgress:
         - Description: HTTPS to API Gateway, S3 and OS/package repositories
           IpProtocol: tcp
@@ -605,6 +603,19 @@ Resources:
           Value: medislot
         - Key: Environment
           Value: !Ref Environment
+
+  # Private DNS on the interface endpoints applies to the whole VPC, so the
+  # web instance's calls to SSM also land on the endpoint and must be allowed.
+  EC2ToVPCEndpointIngress:
+    Type: AWS::EC2::SecurityGroupIngress
+    Condition: CreateAnyInterfaceEndpoint
+    Properties:
+      GroupId: !Ref VPCEndpointSecurityGroup
+      Description: HTTPS from the web EC2 instance
+      IpProtocol: tcp
+      FromPort: 443
+      ToPort: 443
+      SourceSecurityGroupId: !Ref EC2SecurityGroup
 
   LambdaToVPCEndpointEgress:
     Type: AWS::EC2::SecurityGroupEgress

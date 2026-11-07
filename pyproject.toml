@@ -1,0 +1,31 @@
+[project]
+name = "medislot"
+version = "0.4.0"
+description = "MediSlot doctor appointment platform (AWS-native capstone)"
+requires-python = ">=3.12"
+
+[tool.ruff]
+line-length = 130
+target-version = "py312"
+extend-exclude = ["build", ".venv"]
+
+[tool.ruff.lint]
+select = ["E", "W", "F", "B", "I", "UP", "S"]
+ignore = [
+    "S101",  # assert is how pytest works
+    "S608",  # SQL is built from fixed column names; every value is a bound parameter
+    "B008",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S105", "S106", "S311", "E501"]
+
+[tool.ruff.lint.isort]
+known-first-party = ["medislot_common", "migrator", "medislot_web"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests/unit"]
+addopts = "-ra"
+markers = [
+    "integration: runs against deployed AWS infrastructure (tests/integration)",
+]

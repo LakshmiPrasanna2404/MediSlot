@@ -1,5 +1,11 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: MediSlot environment-specific IAM roles and least-privilege execution policies
+Description: >-
+  MediSlot IAM. One execution role per Lambda function (every function in the
+  architecture diagrams, including the ones planned for Milestones 5 and 6),
+  the EventBridge Scheduler invoke role, the API Gateway logging role and the
+  web instance role. No wildcard actions; resources are named ARNs. Only the
+  ENI actions use Resource "*", because AWS does not support resource-level
+  permissions for them.
 
 Parameters:
   Environment:
@@ -10,12 +16,69 @@ Parameters:
     Description: Deployment environment
 
 Resources:
-  # Lambda execution role for request authorizer
+  # ---------------------------------------------------------------------------
+  # Shared policies
+  # ---------------------------------------------------------------------------
+  LambdaBasePolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: 'The ENI actions Lambda needs to join the VPC do not support resource-level permissions, so Resource is * for that statement only.'
+    Properties:
+      ManagedPolicyName: !Sub medislot-${Environment}-lambda-base
+      Description: Logs, VPC networking and the business-rule parameters, for every MediSlot Lambda
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: WriteOwnLogs
+            Effect: Allow
+            Action:
+              - logs:CreateLogStream
+              - logs:PutLogEvents
+            Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/medislot-${Environment}-*:*
+          - Sid: VpcNetworkInterfaces
+            Effect: Allow
+            Action:
+              - ec2:CreateNetworkInterface
+              - ec2:DescribeNetworkInterfaces
+              - ec2:DescribeSubnets
+              - ec2:DeleteNetworkInterface
+              - ec2:AssignPrivateIpAddresses
+              - ec2:UnassignPrivateIpAddresses
+            Resource: '*'
+          - Sid: ReadBusinessRules
+            Effect: Allow
+            Action:
+              - ssm:GetParametersByPath
+              - ssm:GetParameter
+              - ssm:GetParameters
+            Resource:
+              - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/config
+              - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/config/*
+
+  DatabaseAccessPolicy:
+    Type: AWS::IAM::ManagedPolicy
+    Properties:
+      ManagedPolicyName: !Sub medislot-${Environment}-database-access
+      Description: Read the RDS username and password (SecureString) from SSM
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: ReadDatabaseCredentials
+            Effect: Allow
+            Action:
+              - ssm:GetParameter
+              - ssm:GetParameters
+            Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/*
+
+  # M2 - Lambda authorizer: verify JWT, check denylist
   AuthorizerLambdaRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub medislot-${Environment}-authorizer-role
-      Description: Execution role for MediSlot request authorizer
+      Description: 'Lambda authorizer: verify JWT, check denylist'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -23,110 +86,33 @@ Resources:
             Principal:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref LambdaBasePolicy
       Policies:
-        - PolicyName: AuthorizerExecutionPermissions
+        - PolicyName: authorizer-permissions
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Sid: WriteLambdaLogs
-                Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/medislot-${Environment}-*:*
-              - Sid: ReadAuthorizerParameters
-                Effect: Allow
-                Action:
-                  - ssm:GetParameter
-                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/*
-              - Sid: ReadTokenRevocations
-                Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:BatchGetItem
-                Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-token-revocations
-              - Sid: ManageAuthorizerLambdaNetworkInterfaces
-                Effect: Allow
-                Action:
-                  - ec2:CreateNetworkInterface
-                  - ec2:DescribeNetworkInterfaces
-                  - ec2:DeleteNetworkInterface
-                  - ec2:AssignPrivateIpAddresses
-                  - ec2:UnassignPrivateIpAddresses
-                Resource: '*'
-
-  # Lambda execution role for authentication functions
-  AuthLambdaRole:
-    Type: AWS::IAM::Role
-    Properties:
-      RoleName: !Sub medislot-${Environment}-auth-role
-      Description: Execution role for MediSlot authentication functions
-      AssumeRolePolicyDocument:
-        Version: '2012-10-17'
-        Statement:
-          - Effect: Allow
-            Principal:
-              Service: lambda.amazonaws.com
-            Action: sts:AssumeRole
-      Policies:
-        - PolicyName: AuthExecutionPermissions
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Sid: WriteLambdaLogs
-                Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/medislot-${Environment}-*:*
-              - Sid: ReadAuthAndDatabaseParameters
+              - Sid: ReadAuthParameters
                 Effect: Allow
                 Action:
                   - ssm:GetParameter
                   - ssm:GetParameters
                 Resource:
                   - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/*
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/*
-              # Logout uses one transaction spanning the revocation and refresh tables.
-              # Refresh rotation uses a transaction on the refresh table only.
-              - Sid: ManageTokenRevocations
+              - Sid: ReadDenylist
                 Effect: Allow
                 Action:
                   - dynamodb:GetItem
-                  - dynamodb:PutItem
-                  - dynamodb:DeleteItem
-                  - dynamodb:UpdateItem
-                  - dynamodb:TransactWriteItems
                 Resource:
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-token-revocations
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-refresh-tokens
-              - Sid: ManageRefreshTokenSessions
-                Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:PutItem
-                  - dynamodb:DeleteItem
-                  - dynamodb:TransactWriteItems
-                Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-refresh-tokens
-              - Sid: ManageAuthLambdaNetworkInterfaces
-                Effect: Allow
-                Action:
-                  - ec2:CreateNetworkInterface
-                  - ec2:DescribeNetworkInterfaces
-                  - ec2:DeleteNetworkInterface
-                  - ec2:AssignPrivateIpAddresses
-                  - ec2:UnassignPrivateIpAddresses
-                Resource: '*'
 
-  # Main application Lambda execution role. Attach only to application Lambdas
-  # that require the permissions below.
-  AppLambdaRole:
+  # M2 - Auth Lambda: register, login, refresh, logout
+  AuthLambdaRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub medislot-${Environment}-app-role
-      Description: Execution role for MediSlot application Lambda functions
+      RoleName: !Sub medislot-${Environment}-auth-role
+      Description: 'Auth Lambda: register, login, refresh, logout'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -134,144 +120,79 @@ Resources:
             Principal:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref LambdaBasePolicy
+        - !Ref DatabaseAccessPolicy
       Policies:
-        - PolicyName: AppExecutionPermissions
+        - PolicyName: auth-permissions
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Sid: WriteLambdaLogs
-                Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/medislot-${Environment}-*:*
-              - Sid: ReadApplicationAndDatabaseParameters
+              - Sid: ReadAuthParameters
                 Effect: Allow
                 Action:
                   - ssm:GetParameter
                   - ssm:GetParameters
                 Resource:
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/*
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/config/*
-              - Sid: AccessSlotTable
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/*
+              - Sid: RefreshTokens
                 Effect: Allow
                 Action:
                   - dynamodb:GetItem
-                  - dynamodb:BatchGetItem
                   - dynamodb:PutItem
-                  - dynamodb:UpdateItem
                   - dynamodb:DeleteItem
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-refresh-tokens
+              - Sid: Denylist
+                Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-token-revocations
+
+  # M3 - Doctor Profile Lambda
+  DoctorProfileRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-doctor-profile-role
+      Description: 'Doctor Profile Lambda'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref LambdaBasePolicy
+        - !Ref DatabaseAccessPolicy
+      Policies:
+        - PolicyName: doctor-profile-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: SyncSlotsOnTimezoneChange
+                Effect: Allow
+                Action:
                   - dynamodb:Query
-                  - dynamodb:Scan
-                  - dynamodb:ConditionCheckItem
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
                 Resource:
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots/index/GSI_Doctor_Slots
-              - Sid: AccessSeatTable
-                Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:BatchGetItem
-                  - dynamodb:PutItem
-                  - dynamodb:UpdateItem
-                  - dynamodb:DeleteItem
-                  - dynamodb:Query
-                  - dynamodb:Scan
-                  - dynamodb:ConditionCheckItem
-                Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-seats
-              - Sid: AccessWaitlistTable
-                Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:BatchGetItem
-                  - dynamodb:PutItem
-                  - dynamodb:UpdateItem
-                  - dynamodb:DeleteItem
-                  - dynamodb:Query
-                  - dynamodb:Scan
-                  - dynamodb:ConditionCheckItem
-                Resource:
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist/index/GSI_Patient_Waitlists
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist/index/LSI_QueueOrder
-              - Sid: AccessHoldOffersTableAndIndexes
-                Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:BatchGetItem
-                  - dynamodb:PutItem
-                  - dynamodb:UpdateItem
-                  - dynamodb:DeleteItem
-                  - dynamodb:Query
-                  - dynamodb:Scan
-                  - dynamodb:ConditionCheckItem
-                Resource:
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers/index/GSI_Patient_Offers
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers/index/GSI_Slot_Offers
-              - Sid: AccessIdempotencyTable
-                Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:PutItem
-                  - dynamodb:UpdateItem
-                  - dynamodb:DeleteItem
-                  - dynamodb:ConditionCheckItem
-                Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-idempotency
-              - Sid: AccessDispatchLogTable
-                Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:BatchGetItem
-                  - dynamodb:PutItem
-                  - dynamodb:UpdateItem
-                  - dynamodb:DeleteItem
-                  - dynamodb:Query
-                  - dynamodb:Scan
-                Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-dispatch-log
-              - Sid: ManageDoctorProfilePhotos
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots/index/*
+              - Sid: SignPhotoDownloads
                 Effect: Allow
                 Action:
                   - s3:GetObject
-                  - s3:PutObject
-                  - s3:DeleteObject
-                Resource: !Sub arn:${AWS::Partition}:s3:::medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-doctor-profile-files/*
-              - Sid: PublishApplicationEvents
-                Effect: Allow
-                Action:
-                  - events:PutEvents
-                Resource: !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/medislot-${Environment}-*
-              - Sid: PublishApplicationNotifications
-                Effect: Allow
-                Action:
-                  - sns:Publish
-                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-*
-              - Sid: StartSlotWorkflow
-                Effect: Allow
-                Action:
-                  - states:StartExecution
-                  - states:DescribeExecution
-                  - states:StopExecution
                 Resource:
-                  - !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:medislot-${Environment}-*
-                  - !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:medislot-${Environment}-*:*
-              - Sid: ManageAppLambdaNetworkInterfaces
-                Effect: Allow
-                Action:
-                  - ec2:CreateNetworkInterface
-                  - ec2:DescribeNetworkInterfaces
-                  - ec2:DeleteNetworkInterface
-                  - ec2:AssignPrivateIpAddresses
-                  - ec2:UnassignPrivateIpAddresses
-                Resource: '*'
+                  - !Sub arn:${AWS::Partition}:s3:::medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-doctor-profile-files/doctor-profiles/*
 
-  # Scheduled maintenance and reporting Lambda execution role
-  ReportLambdaRole:
+  # M3 - Photo Upload Lambda: pre-signed POST
+  PhotoUploadRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub medislot-${Environment}-report-role
-      Description: Execution role for MediSlot scheduled jobs and maintenance Lambdas
+      RoleName: !Sub medislot-${Environment}-photo-upload-role
+      Description: 'Photo Upload Lambda: pre-signed POST'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -279,92 +200,794 @@ Resources:
             Principal:
               Service: lambda.amazonaws.com
             Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref LambdaBasePolicy
+        - !Ref DatabaseAccessPolicy
       Policies:
-        - PolicyName: ReportExecutionPermissions
+        - PolicyName: photo-upload-permissions
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Sid: WriteLambdaLogs
+              - Sid: SignPhotoUploads
                 Effect: Allow
                 Action:
-                  - logs:CreateLogGroup
-                  - logs:CreateLogStream
-                  - logs:PutLogEvents
-                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/medislot-${Environment}-*:*
-              - Sid: ReadReportAndDatabaseParameters
-                Effect: Allow
-                Action:
-                  - ssm:GetParameter
-                  - ssm:GetParameters
+                  - s3:PutObject
                 Resource:
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/db/*
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/config/*
-              - Sid: ReadSlotTableAndDoctorSlotsIndex
+                  - !Sub arn:${AWS::Partition}:s3:::medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-doctor-profile-files/doctor-profiles/*
+
+  # M3 - Consultation Types Lambda
+  ConsultationTypesRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-consultation-types-role
+      Description: 'Consultation Types Lambda'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref LambdaBasePolicy
+        - !Ref DatabaseAccessPolicy
+
+  # M3 - Availability and Blackouts Lambda
+  AvailabilityRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-availability-role
+      Description: 'Availability and Blackouts Lambda'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref LambdaBasePolicy
+        - !Ref DatabaseAccessPolicy
+      Policies:
+        - PolicyName: availability-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: SyncSlots
                 Effect: Allow
                 Action:
-                  - dynamodb:GetItem
-                  - dynamodb:BatchGetItem
                   - dynamodb:Query
-                  - dynamodb:Scan
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
                 Resource:
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots/index/GSI_Doctor_Slots
-              - Sid: MaintainWaitlistTable
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots/index/*
+
+  # M3 - Schedule Lambda: day and week view
+  ScheduleRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-schedule-role
+      Description: 'Schedule Lambda: day and week view'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref LambdaBasePolicy
+        - !Ref DatabaseAccessPolicy
+      Policies:
+        - PolicyName: schedule-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadSlots
+                Effect: Allow
+                Action:
+                  - dynamodb:Query
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots/index/*
+
+  # M3 - Slot Materialiser (daily job)
+  SlotMaterialiserRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-slot-materialiser-role
+      Description: 'Slot Materialiser (daily job)'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref LambdaBasePolicy
+        - !Ref DatabaseAccessPolicy
+      Policies:
+        - PolicyName: slot-materialiser-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: MaterialiseSlots
+                Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots/index/*
+
+  # M4 - Patient Profile Lambda
+  PatientProfileRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-patient-profile-role
+      Description: 'Patient Profile Lambda'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref LambdaBasePolicy
+        - !Ref DatabaseAccessPolicy
+      Policies:
+        - PolicyName: patient-profile-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: RevokeTokenOnDelete
+                Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-token-revocations
+
+  # M4 - Doctor Search Lambda
+  DoctorSearchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-doctor-search-role
+      Description: 'Doctor Search Lambda'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref LambdaBasePolicy
+        - !Ref DatabaseAccessPolicy
+      Policies:
+        - PolicyName: doctor-search-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: SignPhotoDownloads
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                Resource:
+                  - !Sub arn:${AWS::Partition}:s3:::medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-doctor-profile-files/doctor-profiles/*
+
+  # M4 - Slot Lookup Lambda
+  SlotLookupRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-slot-lookup-role
+      Description: 'Slot Lookup Lambda'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref LambdaBasePolicy
+        - !Ref DatabaseAccessPolicy
+      Policies:
+        - PolicyName: slot-lookup-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadSlots
+                Effect: Allow
+                Action:
+                  - dynamodb:Query
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots/index/*
+
+  # M2 - Schema migrations, run by the pipeline inside the VPC
+  DbMigrateRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-db-migrate-role
+      Description: 'Schema migrations, run by the pipeline inside the VPC'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref LambdaBasePolicy
+        - !Ref DatabaseAccessPolicy
+
+  # M5 - Booking Lambda (planned)
+  BookingRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-booking-role
+      Description: 'Booking Lambda (planned)'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref LambdaBasePolicy
+        - !Ref DatabaseAccessPolicy
+      Policies:
+        - PolicyName: booking-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ClaimSeat
                 Effect: Allow
                 Action:
                   - dynamodb:GetItem
-                  - dynamodb:BatchGetItem
-                  - dynamodb:PutItem
                   - dynamodb:UpdateItem
-                  - dynamodb:DeleteItem
-                  - dynamodb:Query
-                  - dynamodb:Scan
-                  - dynamodb:ConditionCheckItem
-                Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist
-              - Sid: MaintainHoldOffersTableAndIndexes
-                Effect: Allow
-                Action:
-                  - dynamodb:GetItem
-                  - dynamodb:BatchGetItem
-                  - dynamodb:PutItem
-                  - dynamodb:UpdateItem
-                  - dynamodb:DeleteItem
-                  - dynamodb:Query
-                  - dynamodb:Scan
                   - dynamodb:ConditionCheckItem
                 Resource:
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers/index/GSI_Patient_Offers
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers/index/GSI_Slot_Offers
-              - Sid: ReadDispatchLogTable
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
+              - Sid: SeatItems
                 Effect: Allow
                 Action:
                   - dynamodb:GetItem
-                  - dynamodb:BatchGetItem
-                  - dynamodb:Query
-                  - dynamodb:Scan
-                Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-dispatch-log
-              - Sid: PublishScheduledEvents
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-seats
+              - Sid: Idempotency
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-idempotency
+              - Sid: ExpiredOffers
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers
+              - Sid: PublishEvents
                 Effect: Allow
                 Action:
                   - events:PutEvents
-                Resource: !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/medislot-${Environment}-*
-              - Sid: ManageReportLambdaNetworkInterfaces
+                Resource:
+                  - !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/medislot-${Environment}-events
+              - Sid: ReminderSchedules
                 Effect: Allow
                 Action:
-                  - ec2:CreateNetworkInterface
-                  - ec2:DescribeNetworkInterfaces
-                  - ec2:DeleteNetworkInterface
-                  - ec2:AssignPrivateIpAddresses
-                  - ec2:UnassignPrivateIpAddresses
-                Resource: '*'
+                  - scheduler:CreateSchedule
+                  - scheduler:DeleteSchedule
+                Resource:
+                  - !Sub arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/default/medislot-${Environment}-*
+              - Sid: PassSchedulerRole
+                Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource:
+                  - !GetAtt SchedulerInvokeRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: scheduler.amazonaws.com
 
-  # EC2 role for dashboard
+  # M5 - Cancel and refund Lambda (planned)
+  CancelRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-cancel-role
+      Description: 'Cancel and refund Lambda (planned)'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref LambdaBasePolicy
+        - !Ref DatabaseAccessPolicy
+      Policies:
+        - PolicyName: cancel-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReleaseSeat
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
+              - Sid: SeatItems
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:DeleteItem
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-seats
+              - Sid: PublishEvents
+                Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource:
+                  - !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/medislot-${Environment}-events
+              - Sid: ReminderSchedules
+                Effect: Allow
+                Action:
+                  - scheduler:DeleteSchedule
+                Resource:
+                  - !Sub arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/default/medislot-${Environment}-*
+
+  # M5 - Refund History Lambda (planned)
+  RefundHistoryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-refund-history-role
+      Description: 'Refund History Lambda (planned)'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref LambdaBasePolicy
+        - !Ref DatabaseAccessPolicy
+
+  # M5 - Outcome Lambda: COMPLETED or NO_SHOW (planned)
+  OutcomeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-outcome-role
+      Description: 'Outcome Lambda: COMPLETED or NO_SHOW (planned)'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref LambdaBasePolicy
+        - !Ref DatabaseAccessPolicy
+      Policies:
+        - PolicyName: outcome-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: PublishEvents
+                Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource:
+                  - !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/medislot-${Environment}-events
+
+  # M5 - Slot Cancel Lambda: starts the slot-cancel workflow (planned)
+  SlotCancelRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-slot-cancel-role
+      Description: 'Slot Cancel Lambda: starts the slot-cancel workflow (planned)'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref LambdaBasePolicy
+        - !Ref DatabaseAccessPolicy
+      Policies:
+        - PolicyName: slot-cancel-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: CloseSlot
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
+              - Sid: StartWorkflow
+                Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource:
+                  - !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:medislot-${Environment}-slot-cancel
+
+  # M6 - Reschedule Starter Lambda (planned)
+  RescheduleStarterRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-reschedule-starter-role
+      Description: 'Reschedule Starter Lambda (planned)'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref LambdaBasePolicy
+        - !Ref DatabaseAccessPolicy
+      Policies:
+        - PolicyName: reschedule-starter-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: StartSaga
+                Effect: Allow
+                Action:
+                  - states:StartExecution
+                Resource:
+                  - !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:medislot-${Environment}-reschedule
+
+  # M6 - Waitlist Lambda: join, leave, list, accept (planned)
+  WaitlistRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-waitlist-role
+      Description: 'Waitlist Lambda: join, leave, list, accept (planned)'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref LambdaBasePolicy
+        - !Ref DatabaseAccessPolicy
+      Policies:
+        - PolicyName: waitlist-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: WaitlistEntries
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                  - dynamodb:Query
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist/index/*
+              - Sid: QueueCounter
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
+              - Sid: Offers
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers/index/*
+              - Sid: SeatItems
+                Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-seats
+              - Sid: PublishEvents
+                Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource:
+                  - !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/medislot-${Environment}-events
+
+  # M6 - Waitlist Processor: SlotSeatFreed -> hold offer (planned)
+  WaitlistProcessorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-waitlist-processor-role
+      Description: 'Waitlist Processor: SlotSeatFreed -> hold offer (planned)'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref LambdaBasePolicy
+      Policies:
+        - PolicyName: waitlist-processor-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: HoldSeat
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
+              - Sid: NextInLine
+                Effect: Allow
+                Action:
+                  - dynamodb:Query
+                  - dynamodb:UpdateItem
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist/index/*
+              - Sid: CreateOffer
+                Effect: Allow
+                Action:
+                  - dynamodb:PutItem
+                  - dynamodb:Query
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers/index/*
+              - Sid: PublishEvents
+                Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource:
+                  - !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/medislot-${Environment}-events
+              - Sid: ExpirySchedules
+                Effect: Allow
+                Action:
+                  - scheduler:CreateSchedule
+                Resource:
+                  - !Sub arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/default/medislot-${Environment}-*
+              - Sid: PassSchedulerRole
+                Effect: Allow
+                Action:
+                  - iam:PassRole
+                Resource:
+                  - !GetAtt SchedulerInvokeRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: scheduler.amazonaws.com
+
+  # M6 - Notification Lambda: exactly-once SNS dispatch (planned)
+  NotificationRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-notification-role
+      Description: 'Notification Lambda: exactly-once SNS dispatch (planned)'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref LambdaBasePolicy
+        - !Ref DatabaseAccessPolicy
+      Policies:
+        - PolicyName: notification-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: DispatchLog
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                  - dynamodb:DeleteItem
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-dispatch-log
+              - Sid: Publish
+                Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource:
+                  - !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-*
+
+  # M6 - Offer Expiry job (planned)
+  OfferExpiryRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-offer-expiry-role
+      Description: 'Offer Expiry job (planned)'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref LambdaBasePolicy
+      Policies:
+        - PolicyName: offer-expiry-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ExpireOffer
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:UpdateItem
+                  - dynamodb:Query
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-hold-offers/index/*
+              - Sid: ReleaseHeldSeat
+                Effect: Allow
+                Action:
+                  - dynamodb:UpdateItem
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
+              - Sid: RemoveEntry
+                Effect: Allow
+                Action:
+                  - dynamodb:UpdateItem
+                  - dynamodb:DeleteItem
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-waitlist
+              - Sid: PublishEvents
+                Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource:
+                  - !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/medislot-${Environment}-events
+
+  # M6 - Reminder job (planned)
+  ReminderRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-reminder-role
+      Description: 'Reminder job (planned)'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref LambdaBasePolicy
+        - !Ref DatabaseAccessPolicy
+      Policies:
+        - PolicyName: reminder-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: DispatchLog
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:PutItem
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-dispatch-log
+              - Sid: Publish
+                Effect: Allow
+                Action:
+                  - sns:Publish
+                Resource:
+                  - !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-*
+
+  # M6 - No-show job (planned)
+  NoShowRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-no-show-role
+      Description: 'No-show job (planned)'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Ref LambdaBasePolicy
+        - !Ref DatabaseAccessPolicy
+      Policies:
+        - PolicyName: no-show-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: PublishEvents
+                Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource:
+                  - !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/medislot-${Environment}-events
+
+  # ---------------------------------------------------------------------------
+  # Service roles
+  # ---------------------------------------------------------------------------
+  # EventBridge Scheduler invokes the scheduled-job Lambdas with this role.
+  SchedulerInvokeRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-scheduler-invoke-role
+      Description: EventBridge Scheduler invokes the MediSlot job Lambdas
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: scheduler.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: invoke-job-functions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: InvokeJobs
+                Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:medislot-${Environment}-slot-materialiser
+                  - !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:medislot-${Environment}-offer-expiry
+                  - !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:medislot-${Environment}-reminder
+                  - !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:medislot-${Environment}-no-show
+
+  # API Gateway writes REST API access logs to CloudWatch with this role.
+  ApiGatewayCloudWatchRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-apigateway-logs-role
+      Description: API Gateway pushes access logs to CloudWatch Logs
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: apigateway.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/service-role/AmazonAPIGatewayPushToCloudWatchLogs
+
+  # The Flask web app on EC2 is a pure API client: it reads its own settings
+  # and its package, and has no database credentials or data-table access.
   DashboardEC2Role:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub medislot-${Environment}-dashboard-role
-      Description: Instance role for MediSlot dashboard EC2
+      Description: Instance role for the MediSlot web app (doctor and patient dashboards)
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -372,39 +995,30 @@ Resources:
             Principal:
               Service: ec2.amazonaws.com
             Action: sts:AssumeRole
+      # Session Manager instead of SSH: no port 22, no key pairs, every session
+      # is logged by IAM identity. Used to read the web app's journal.
+      ManagedPolicyArns:
+        - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
       Policies:
-        - PolicyName: DashboardReadPermissions
+        - PolicyName: web-app-permissions
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Sid: ReadDashboardParameters
+              - Sid: ReadWebSettings
                 Effect: Allow
                 Action:
                   - ssm:GetParameter
                   - ssm:GetParameters
-                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/dashboard/*
-              - Sid: ReadDashboardMetrics
-                Effect: Allow
-                Action:
-                  - cloudwatch:GetMetricData
-                  - cloudwatch:GetMetricStatistics
-                  - cloudwatch:ListMetrics
-                  - cloudwatch:DescribeAlarms
-                Resource: '*'
-              # The instance downloads its own package at boot. Read-only, one prefix.
-              - Sid: ReadDashboardPackage
+                Resource:
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/dashboard/*
+                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/api/*
+              - Sid: ReadWebPackage
                 Effect: Allow
                 Action:
                   - s3:GetObject
-                Resource: !Sub arn:${AWS::Partition}:s3:::medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-artifacts/medislot/${Environment}/dashboard/*
-              - Sid: ReadDashboardLogs
-                Effect: Allow
-                Action:
-                  - logs:DescribeLogGroups
-                  - logs:DescribeLogStreams
-                  - logs:FilterLogEvents
-                  - logs:GetLogEvents
-                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/medislot-${Environment}-*:*
+                Resource: !Sub
+                  - arn:${AWS::Partition}:s3:::${Bucket}/medislot/${Environment}/dashboard/*
+                  - Bucket: !ImportValue medislot-artifacts-bucket-name
 
   DashboardInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -413,247 +1027,139 @@ Resources:
       Roles:
         - !Ref DashboardEC2Role
 
-  # Dedicated CloudFormation service role for deploying Auth and App/API stacks.
-  # GitHub Actions passes this role to CloudFormation; CloudFormation then
-  # creates the Lambda, log-group, API Gateway, and SSM resources.
-  CloudFormationExecutionRole:
+  # LEGACY: the single "app" Lambda role from before the per-function split.
+  # The old app stack imports its export, so it stays until that stack has
+  # been updated once; remove it in the next pull request.
+  AppLambdaRole:
     Type: AWS::IAM::Role
     Properties:
-      RoleName: !Sub medislot-${Environment}-cloudformation-execution-role
-      Description: Service role assumed by CloudFormation for MediSlot Auth and App/API stacks
+      RoleName: !Sub medislot-${Environment}-app-role
+      Description: LEGACY - replaced by the per-function roles above
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
           - Effect: Allow
             Principal:
-              Service: cloudformation.amazonaws.com
+              Service: lambda.amazonaws.com
             Action: sts:AssumeRole
-      Policies:
-        - PolicyName: MediSlotAuthAppApiDeploymentPermissions
-          PolicyDocument:
-            Version: '2012-10-17'
-            Statement:
-              - Sid: ManageMediSlotAuthLambdaFunctions
-                Effect: Allow
-                Action:
-                  - lambda:CreateFunction
-                  - lambda:DeleteFunction
-                  - lambda:GetFunction
-                  - lambda:GetFunctionConfiguration
-                  - lambda:UpdateFunctionCode
-                  - lambda:UpdateFunctionConfiguration
-                  - lambda:TagResource
-                  - lambda:UntagResource
-                  - lambda:ListTags
-                  - lambda:AddPermission
-                  - lambda:RemovePermission
-                  - lambda:GetPolicy
-                  - lambda:GetFunctionCodeSigningConfig
-                  - lambda:GetRuntimeManagementConfig
-                  - lambda:GetFunctionRecursionConfig
-                Resource: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:medislot-${Environment}-*
-              - Sid: PassOnlyMediSlotLambdaExecutionRoles
-                Effect: Allow
-                Action: iam:PassRole
-                Resource:
-                  - !GetAtt AuthLambdaRole.Arn
-                  - !GetAtt AuthorizerLambdaRole.Arn
-                  - !GetAtt AppLambdaRole.Arn
-                Condition:
-                  StringEquals:
-                    iam:PassedToService: lambda.amazonaws.com
-              - Sid: PassOnlyDashboardInstanceRole
-                Effect: Allow
-                Action: iam:PassRole
-                Resource: !GetAtt DashboardEC2Role.Arn
-                Condition:
-                  StringEquals:
-                    iam:PassedToService: ec2.amazonaws.com
-              - Sid: ManageMediSlotAuthLogGroups
-                Effect: Allow
-                Action:
-                  - logs:CreateLogGroup
-                  - logs:DeleteLogGroup
-                  - logs:PutRetentionPolicy
-                  - logs:DeleteRetentionPolicy
-                  - logs:TagResource
-                  - logs:UntagResource
-                  - logs:DescribeLogGroups
-                  - logs:ListTagsForResource
-                  - logs:GetDataProtectionPolicy
-                  - logs:DescribeIndexPolicies
-                Resource: !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/medislot-${Environment}-*
-              # Account-level read; this action does not support resource scoping.
-              - Sid: ReadLogResourcePolicies
-                Effect: Allow
-                Action:
-                  - logs:DescribeResourcePolicies
-                Resource: '*'
-              - Sid: DescribeNetworkConfiguration
-                Effect: Allow
-                Action:
-                  - ec2:DescribeSecurityGroups
-                  - ec2:DescribeSubnets
-                  - ec2:DescribeVpcs
-                  - ec2:DescribeNetworkInterfaces
-                Resource: '*'
-              - Sid: ReadMediSlotLambdaPackages
-                Effect: Allow
-                Action:
-                  - s3:GetObject
-                  - s3:GetObjectVersion
-                Resource:
-                  - !Sub arn:${AWS::Partition}:s3:::medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-artifacts/medislot/${Environment}/auth/*
-                  - !Sub arn:${AWS::Partition}:s3:::medislot-${Environment}-${AWS::AccountId}-${AWS::Region}-artifacts/medislot/${Environment}/app/*
-
-              # ---- Dashboard and monitoring stacks ------------------------------
-              # EC2 write actions cannot be limited to a resource name, so they are
-              # limited to this region instead. Instances, security groups and the
-              # Elastic IP created by dashboard-stack carry the Project tag.
-              - Sid: DescribeDashboardInfrastructure
-                Effect: Allow
-                Action:
-                  - ec2:DescribeInstances
-                  - ec2:DescribeInstanceAttribute
-                  - ec2:DescribeInstanceTypes
-                  - ec2:DescribeInstanceCreditSpecifications
-                  - ec2:DescribeImages
-                  - ec2:DescribeVolumes
-                  - ec2:DescribeAddresses
-                  - ec2:DescribeTags
-                  - ec2:DescribeSecurityGroupRules
-                  - ec2:DescribeIamInstanceProfileAssociations
-                  - ec2:DescribeAvailabilityZones
-                Resource: '*'
-              - Sid: ManageDashboardInstanceAndNetworking
-                Effect: Allow
-                Action:
-                  - ec2:RunInstances
-                  - ec2:StartInstances
-                  - ec2:StopInstances
-                  - ec2:TerminateInstances
-                  - ec2:ModifyInstanceAttribute
-                  - ec2:ModifyInstanceMetadataOptions
-                  - ec2:ModifyInstanceCreditSpecification
-                  - ec2:CreateTags
-                  - ec2:DeleteTags
-                  - ec2:CreateSecurityGroup
-                  - ec2:DeleteSecurityGroup
-                  - ec2:AuthorizeSecurityGroupIngress
-                  - ec2:AuthorizeSecurityGroupEgress
-                  - ec2:RevokeSecurityGroupIngress
-                  - ec2:RevokeSecurityGroupEgress
-                  - ec2:AllocateAddress
-                  - ec2:ReleaseAddress
-                  - ec2:AssociateAddress
-                  - ec2:DisassociateAddress
-                Resource: '*'
-                Condition:
-                  StringEquals:
-                    aws:RequestedRegion: !Ref AWS::Region
-              # CloudFormation resolves the public Amazon Linux AMI parameter with
-              # the deploying role's credentials.
-              - Sid: ReadPublicAmiParameters
-                Effect: Allow
-                Action:
-                  - ssm:GetParameters
-                  - ssm:GetParameter
-                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}::parameter/aws/service/ami-amazon-linux-latest/*
-              - Sid: ManageMediSlotAlarms
-                Effect: Allow
-                Action:
-                  - cloudwatch:PutMetricAlarm
-                  - cloudwatch:DeleteAlarms
-                  - cloudwatch:TagResource
-                  - cloudwatch:UntagResource
-                  - cloudwatch:ListTagsForResource
-                Resource: !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:medislot-${Environment}-*
-              - Sid: DescribeMediSlotAlarms
-                Effect: Allow
-                Action:
-                  - cloudwatch:DescribeAlarms
-                Resource: '*'
-              - Sid: ManageMediSlotAlarmTopic
-                Effect: Allow
-                Action:
-                  - sns:CreateTopic
-                  - sns:DeleteTopic
-                  - sns:GetTopicAttributes
-                  - sns:SetTopicAttributes
-                  - sns:Subscribe
-                  - sns:Unsubscribe
-                  - sns:GetSubscriptionAttributes
-                  - sns:ListSubscriptionsByTopic
-                  - sns:TagResource
-                  - sns:UntagResource
-                  - sns:ListTagsForResource
-                Resource:
-                  - !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-*
-              # Permission required by CloudFormation AWS::SSM::Parameter resources
-              - Sid: ManageMediSlotAuthSSMParameters
-                Effect: Allow
-                Action:
-                  - ssm:PutParameter
-                  - ssm:GetParameter
-                  - ssm:GetParameters
-                  - ssm:ListTagsForResource
-                  - ssm:DeleteParameter
-                  - ssm:AddTagsToResource
-                  - ssm:RemoveTagsFromResource
-                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/auth/*
-              - Sid: ManageMediSlotHttpApis
-                Effect: Allow
-                Action:
-                  - apigateway:GET
-                  - apigateway:POST
-                  - apigateway:PUT
-                  - apigateway:PATCH
-                  - apigateway:DELETE
-                  - apigateway:TagResource
-                  - apigateway:UntagResource
-                Resource:
-                  - !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}::/apis*
-                  - !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}::/tags/*
+      ManagedPolicyArns:
+        - !Ref LambdaBasePolicy
 
 Outputs:
   AuthorizerLambdaRoleArn:
-    Description: IAM role ARN for the authorizer Lambda
     Value: !GetAtt AuthorizerLambdaRole.Arn
     Export:
       Name: !Sub medislot-${Environment}-authorizer-role-arn
-
   AuthLambdaRoleArn:
-    Description: IAM role ARN for authentication Lambdas
     Value: !GetAtt AuthLambdaRole.Arn
     Export:
       Name: !Sub medislot-${Environment}-auth-role-arn
-
-  AppLambdaRoleArn:
-    Description: IAM role ARN for application Lambda functions
-    Value: !GetAtt AppLambdaRole.Arn
+  DoctorProfileRoleArn:
+    Value: !GetAtt DoctorProfileRole.Arn
     Export:
-      Name: !Sub medislot-${Environment}-app-role-arn
-
-  ReportLambdaRoleArn:
-    Description: IAM role ARN for report and scheduled-job Lambdas
-    Value: !GetAtt ReportLambdaRole.Arn
+      Name: !Sub medislot-${Environment}-doctor-profile-role-arn
+  PhotoUploadRoleArn:
+    Value: !GetAtt PhotoUploadRole.Arn
     Export:
-      Name: !Sub medislot-${Environment}-report-role-arn
-
+      Name: !Sub medislot-${Environment}-photo-upload-role-arn
+  ConsultationTypesRoleArn:
+    Value: !GetAtt ConsultationTypesRole.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-consultation-types-role-arn
+  AvailabilityRoleArn:
+    Value: !GetAtt AvailabilityRole.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-availability-role-arn
+  ScheduleRoleArn:
+    Value: !GetAtt ScheduleRole.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-schedule-role-arn
+  SlotMaterialiserRoleArn:
+    Value: !GetAtt SlotMaterialiserRole.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-slot-materialiser-role-arn
+  PatientProfileRoleArn:
+    Value: !GetAtt PatientProfileRole.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-patient-profile-role-arn
+  DoctorSearchRoleArn:
+    Value: !GetAtt DoctorSearchRole.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-doctor-search-role-arn
+  SlotLookupRoleArn:
+    Value: !GetAtt SlotLookupRole.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-slot-lookup-role-arn
+  DbMigrateRoleArn:
+    Value: !GetAtt DbMigrateRole.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-db-migrate-role-arn
+  BookingRoleArn:
+    Value: !GetAtt BookingRole.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-booking-role-arn
+  CancelRoleArn:
+    Value: !GetAtt CancelRole.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-cancel-role-arn
+  RefundHistoryRoleArn:
+    Value: !GetAtt RefundHistoryRole.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-refund-history-role-arn
+  OutcomeRoleArn:
+    Value: !GetAtt OutcomeRole.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-outcome-role-arn
+  SlotCancelRoleArn:
+    Value: !GetAtt SlotCancelRole.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-slot-cancel-role-arn
+  RescheduleStarterRoleArn:
+    Value: !GetAtt RescheduleStarterRole.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-reschedule-starter-role-arn
+  WaitlistRoleArn:
+    Value: !GetAtt WaitlistRole.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-waitlist-role-arn
+  WaitlistProcessorRoleArn:
+    Value: !GetAtt WaitlistProcessorRole.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-waitlist-processor-role-arn
+  NotificationRoleArn:
+    Value: !GetAtt NotificationRole.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-notification-role-arn
+  OfferExpiryRoleArn:
+    Value: !GetAtt OfferExpiryRole.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-offer-expiry-role-arn
+  ReminderRoleArn:
+    Value: !GetAtt ReminderRole.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-reminder-role-arn
+  NoShowRoleArn:
+    Value: !GetAtt NoShowRole.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-no-show-role-arn
+  SchedulerInvokeRoleArn:
+    Value: !GetAtt SchedulerInvokeRole.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-scheduler-invoke-role-arn
+  ApiGatewayCloudWatchRoleArn:
+    Value: !GetAtt ApiGatewayCloudWatchRole.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-apigateway-logs-role-arn
   DashboardEC2RoleArn:
-    Description: IAM role ARN for dashboard EC2
     Value: !GetAtt DashboardEC2Role.Arn
     Export:
       Name: !Sub medislot-${Environment}-dashboard-role-arn
-
   DashboardInstanceProfileName:
-    Description: Instance profile name for dashboard EC2
     Value: !Ref DashboardInstanceProfile
     Export:
       Name: !Sub medislot-${Environment}-dashboard-profile-name
-
-  CloudFormationExecutionRoleArn:
-    Description: ARN of the dedicated CloudFormation execution role for Auth and App/API deployments
-    Value: !GetAtt CloudFormationExecutionRole.Arn
+  AppLambdaRoleArn:
+    Description: LEGACY export, removed with AppLambdaRole
+    Value: !GetAtt AppLambdaRole.Arn
     Export:
-      Name: !Sub medislot-${Environment}-cloudformation-execution-role-arn
+      Name: !Sub medislot-${Environment}-app-role-arn

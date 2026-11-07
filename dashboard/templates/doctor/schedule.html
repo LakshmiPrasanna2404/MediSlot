@@ -1,0 +1,44 @@
+{% extends "base.html" %}
+{% block title %}Schedule · MediSlot{% endblock %}
+{% block content %}
+<div class="page-head">
+  <h1>Schedule</h1>
+  <form method="get" class="inline-form">
+    <input type="date" name="date" value="{{ data.get('from', '') }}">
+    <select name="view">
+      <option value="day" {{ 'selected' if view == 'day' }}>Day</option>
+      <option value="week" {{ 'selected' if view == 'week' }}>Week</option>
+    </select>
+    <button type="submit" class="button">Show</button>
+  </form>
+</div>
+<p class="muted">Times are in your time zone ({{ data.get('timezone') }}).</p>
+
+{% for day in data.get('days', []) %}
+  <section class="card">
+    <h2>{{ day.date|long_date }}</h2>
+    {% if not day.slots %}
+      <p class="muted">No slots. Add weekly availability, or this is a blackout date.</p>
+    {% else %}
+      <table class="table">
+        <thead><tr><th>Time</th><th>Type</th><th>Seats</th><th>Booked patients</th><th>Status</th></tr></thead>
+        <tbody>
+        {% for slot in day.slots %}
+          <tr>
+            <td class="nowrap">{{ slot.local_start|local_time }} – {{ slot.local_end|local_time }}</td>
+            <td>{{ slot.consultation_type_name }}</td>
+            <td><span class="seats {{ 'full' if slot.free_seats == 0 }}">{{ slot.booked_count }}/{{ slot.capacity }} booked</span>
+              {% if slot.held_count %}<span class="muted">· {{ slot.held_count }} held</span>{% endif %}</td>
+            <td>
+              {% for p in slot.patients %}<div>{{ p.patient_name }} <span class="muted">{{ p.status|lower }}</span></div>
+              {% else %}<span class="muted">None yet</span>{% endfor %}
+            </td>
+            <td>{{ slot.status|lower }}</td>
+          </tr>
+        {% endfor %}
+        </tbody>
+      </table>
+    {% endif %}
+  </section>
+{% endfor %}
+{% endblock %}

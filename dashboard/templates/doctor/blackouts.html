@@ -1,0 +1,32 @@
+{% extends "base.html" %}
+{% block title %}Blackout dates · MediSlot{% endblock %}
+{% block content %}
+<h1>Blackout dates</h1>
+<p class="muted">Leave, conferences, holidays: no slots are offered on these dates. Slots that already have bookings are kept and listed so you can cancel them.</p>
+<section class="card">
+  <form method="post" class="form inline-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Date <input type="date" name="date" min="{{ today }}" required></label>
+    <label>Reason <input name="reason" maxlength="255" placeholder="Conference"></label>
+    <button type="submit" class="button primary">Add blackout</button>
+  </form>
+</section>
+<section class="card">
+  <table class="table">
+    <thead><tr><th>Date</th><th>Reason</th><th></th></tr></thead>
+    <tbody>
+    {% for b in blackouts %}
+      <tr>
+        <td>{{ b.date|long_date }}</td>
+        <td>{{ b.reason or '' }}</td>
+        <td><form method="post" action="{{ url_for('doctor.delete_blackout', blackout_id=b.blackout_id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="link-button danger">Remove</button></form></td>
+      </tr>
+    {% else %}
+      <tr><td colspan="3" class="muted">No blackout dates.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

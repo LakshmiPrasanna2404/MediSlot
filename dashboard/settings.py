@@ -1,52 +1,45 @@
-"""Runtime settings for the MediSlot operations dashboard.
-
-On EC2 these come from /etc/medislot-dashboard.env, which the instance's
-UserData writes from CloudFormation exports. None of them is a secret.
-"""
+"""Configuration. On EC2 the values come from SSM; locally and in tests, from env vars."""
 
 import os
-from dataclasses import dataclass
+
+from cachelib import FileSystemCache
+
+_ssm_cache = {}
 
 
-@dataclass(frozen=True)
-class Settings:
-    environment: str = "dev"
-    region: str = "us-east-1"
-    api_id: str = ""
-    slots_table: str = ""
-    seats_table: str = ""
-    db_instance_id: str = ""
-    # Every GetMetricData query is billed, so results are cached this long.
-    cache_seconds: int = 120
-    # The login page is served over plain HTTP, so the cookie cannot be Secure.
-    # Set DASHBOARD_SECURE_COOKIE=1 only if HTTPS is ever put in front of it.
-    secure_cookie: bool = False
+def _ssm(name, decrypt):
+    if name not in _ssm_cache:
+        import boto3
 
-    @property
-    def ssm_prefix(self):
-        return f"/medislot/{self.environment}/dashboard"
+        client = boto3.client("ssm", region_name=os.environ.get("AWS_REGION", "us-east-1"))
+        _ssm_cache[name] = client.get_parameter(Name=name, WithDecryption=decrypt)["Parameter"]["Value"]
+    return _ssm_cache[name]
 
-    @property
-    def function_names(self):
-        """Lambda function name by short key."""
-        return {
-            key: f"medislot-{self.environment}-{key}"
-            for key in ("auth", "authorizer", "app")
-        }
 
-    @classmethod
-    def from_env(cls, environ=None):
-        env = os.environ if environ is None else environ
-        environment = env.get("ENVIRONMENT", "dev")
-        if environment not in ("dev", "prod"):
-            raise RuntimeError("ENVIRONMENT must be dev or prod")
-        return cls(
-            environment=environment,
-            region=env.get("AWS_REGION") or env.get("AWS_DEFAULT_REGION") or "us-east-1",
-            api_id=env.get("API_ID", ""),
-            slots_table=env.get("SLOTS_TABLE", f"medislot-{environment}-slots"),
-            seats_table=env.get("SEATS_TABLE", f"medislot-{environment}-seats"),
-            db_instance_id=env.get("DB_INSTANCE_ID", f"medislot-{environment}-mysql"),
-            cache_seconds=int(env.get("CACHE_SECONDS", "120")),
-            secure_cookie=env.get("DASHBOARD_SECURE_COOKIE", "") == "1",
-        )
+def api_base_url():
+    """The REST API address. Read lazily: the API stack may deploy after this instance boots."""
+    if os.environ.get("MEDISLOT_API_BASE_URL"):
+        return os.environ["MEDISLOT_API_BASE_URL"].rstrip("/")
+    return _ssm(os.environ["MEDISLOT_API_BASE_URL_PARAMETER"], decrypt=False).rstrip("/")
+
+
+def _session_secret():
+    if os.environ.get("MEDISLOT_SESSION_SECRET"):
+        return os.environ["MEDISLOT_SESSION_SECRET"]
+    return _ssm(os.environ["MEDISLOT_SESSION_SECRET_PARAMETER"], decrypt=True)
+
+
+def load(test_config=None):
+    values = dict(test_config or {})
+    if "SECRET_KEY" not in values:
+        values["SECRET_KEY"] = _session_secret()
+    session_dir = values.pop("SESSION_DIR", os.environ.get("MEDISLOT_SESSION_DIR", "/tmp/medislot-sessions"))  # noqa: S108
+    values.setdefault("SESSION_TYPE", "cachelib")
+    values.setdefault("SESSION_CACHELIB", FileSystemCache(cache_dir=session_dir, threshold=2000, mode=0o600))
+    values.setdefault("SESSION_PERMANENT", False)
+    values.setdefault("SESSION_KEY_PREFIX", "medislot:")
+    values.setdefault("SESSION_COOKIE_NAME", "medislot_session")
+    values.setdefault("SESSION_COOKIE_HTTPONLY", True)
+    values.setdefault("SESSION_COOKIE_SAMESITE", "Lax")
+    values.setdefault("MAX_CONTENT_LENGTH", 64 * 1024)
+    return values

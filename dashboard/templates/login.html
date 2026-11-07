@@ -1,32 +1,15 @@
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="robots" content="noindex">
-  <title>Sign in · MediSlot operations</title>
-  <link rel="stylesheet" href="{{ url_for('static', filename='style.css') }}">
-  <script src="{{ url_for('static', filename='theme.js') }}"></script>
-</head>
-<body class="login-body">
-  <main class="login-card">
-    <h1><span class="brand-name">MediSlot</span> operations <span class="env-badge">{{ environment }}</span></h1>
-    <p class="muted">Sign in to view the {{ environment }} environment.</p>
-
-    {% if error %}
-    <p class="form-error" role="alert"><span aria-hidden="true">✕</span> {{ error }}</p>
-    {% endif %}
-
-    {% if configured %}
-    <form method="post" action="{{ url_for('login') }}" autocomplete="on">
-      <input type="hidden" name="csrf" value="{{ csrf }}">
-      <label for="username">Username</label>
-      <input id="username" name="username" type="text" autocomplete="username" maxlength="200" required autofocus>
-      <label for="password">Password</label>
-      <input id="password" name="password" type="password" autocomplete="current-password" maxlength="200" required>
-      <button class="btn btn-primary" type="submit">Sign in</button>
-    </form>
-    {% endif %}
-  </main>
-</body>
-</html>
+{% extends "base.html" %}
+{% block title %}{{ role|title }} login · MediSlot{% endblock %}
+{% block content %}
+<section class="card narrow">
+  <h1>{{ role|title }} login</h1>
+  <form method="post" class="form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Email <input type="email" name="email" value="{{ email or '' }}" required autocomplete="username"></label>
+    <label>Password <input type="password" name="password" required autocomplete="current-password"></label>
+    <button type="submit" class="button primary">Log in</button>
+  </form>
+  <p class="muted">New here? <a href="{{ url_for('auth.' ~ role ~ '_register') }}">Create a {{ role }} account</a></p>
+  <p class="muted"><a href="{{ url_for('auth.landing') }}">Back</a></p>
+</section>
+{% endblock %}

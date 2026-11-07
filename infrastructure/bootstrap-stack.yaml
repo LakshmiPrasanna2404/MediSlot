@@ -1,0 +1,681 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  MediSlot bootstrap (deploy once per AWS account, by hand, before the first
+  pipeline run). It holds what the pipeline needs in order to exist: the GitHub
+  OIDC trust, the GitHub deploy and test roles, the CloudFormation execution
+  role every stack is deployed with, and the artifacts bucket for Lambda and
+  web packages. See docs/runbook.md, step 2.
+
+Parameters:
+  GitHubOwner:
+    Type: String
+    Description: GitHub user or organisation that owns the repository.
+  GitHubRepo:
+    Type: String
+    Default: MediSlot
+    Description: Repository name.
+  CreateOidcProvider:
+    Type: String
+    AllowedValues: ['true', 'false']
+    Default: 'true'
+    Description: false if this account already has the token.actions.githubusercontent.com provider.
+
+Conditions:
+  MakeOidcProvider: !Equals [!Ref CreateOidcProvider, 'true']
+
+Resources:
+  GitHubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: MakeOidcProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList: [sts.amazonaws.com]
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+
+  ArtifactsBucket:
+    Type: AWS::S3::Bucket
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      BucketName: !Sub medislot-artifacts-${AWS::AccountId}-${AWS::Region}
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      OwnershipControls:
+        Rules:
+          - ObjectOwnership: BucketOwnerEnforced
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldPackages
+            Status: Enabled
+            ExpirationInDays: 90
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 7
+      Tags:
+        - Key: Project
+          Value: MediSlot
+
+  ArtifactsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ArtifactsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: DenyInsecureTransport
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt ArtifactsBucket.Arn
+              - !Sub '${ArtifactsBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  # ---------------------------------------------------------------------------
+  # CloudFormation execution role: every MediSlot stack is created and updated
+  # by CloudFormation acting as this role, never by the GitHub role directly.
+  # Actions are listed one by one (no service wildcards) and resources are
+  # limited to medislot-* names where the service allows it.
+  # ---------------------------------------------------------------------------
+  CloudFormationExecutionRole:
+    Type: AWS::IAM::Role
+    Metadata:
+      checkov:
+        skip:
+          - id: CKV_AWS_111
+            comment: 'EC2 networking and RDS create actions cannot be scoped to resource names before the resources exist; they are limited to this region instead.'
+    Properties:
+      RoleName: medislot-cloudformation-execution-role
+      Description: Assumed by CloudFormation to deploy MediSlot stacks
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal: {Service: cloudformation.amazonaws.com}
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: network-and-compute
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: Ec2NetworkAndInstances
+                Effect: Allow
+                Action:
+                  - ec2:CreateVpc
+                  - ec2:DeleteVpc
+                  - ec2:ModifyVpcAttribute
+                  - ec2:DescribeVpcs
+                  - ec2:DescribeVpcAttribute
+                  - ec2:CreateSubnet
+                  - ec2:DeleteSubnet
+                  - ec2:ModifySubnetAttribute
+                  - ec2:DescribeSubnets
+                  - ec2:CreateInternetGateway
+                  - ec2:DeleteInternetGateway
+                  - ec2:AttachInternetGateway
+                  - ec2:DetachInternetGateway
+                  - ec2:DescribeInternetGateways
+                  - ec2:CreateRouteTable
+                  - ec2:DeleteRouteTable
+                  - ec2:CreateRoute
+                  - ec2:DeleteRoute
+                  - ec2:ReplaceRoute
+                  - ec2:AssociateRouteTable
+                  - ec2:DisassociateRouteTable
+                  - ec2:DescribeRouteTables
+                  - ec2:CreateSecurityGroup
+                  - ec2:DeleteSecurityGroup
+                  - ec2:AuthorizeSecurityGroupIngress
+                  - ec2:AuthorizeSecurityGroupEgress
+                  - ec2:RevokeSecurityGroupIngress
+                  - ec2:RevokeSecurityGroupEgress
+                  - ec2:UpdateSecurityGroupRuleDescriptionsIngress
+                  - ec2:UpdateSecurityGroupRuleDescriptionsEgress
+                  - ec2:ModifySecurityGroupRules
+                  - ec2:DescribeSecurityGroups
+                  - ec2:DescribeSecurityGroupRules
+                  - ec2:CreateVpcEndpoint
+                  - ec2:DeleteVpcEndpoints
+                  - ec2:ModifyVpcEndpoint
+                  - ec2:DescribeVpcEndpoints
+                  - ec2:DescribeVpcEndpointServices
+                  - ec2:DescribePrefixLists
+                  - ec2:DescribeManagedPrefixLists
+                  - ec2:CreateTags
+                  - ec2:DeleteTags
+                  - ec2:DescribeTags
+                  - ec2:DescribeAvailabilityZones
+                  - ec2:DescribeAccountAttributes
+                  - ec2:DescribeNetworkInterfaces
+                  - ec2:RunInstances
+                  - ec2:TerminateInstances
+                  - ec2:StartInstances
+                  - ec2:StopInstances
+                  - ec2:DescribeInstances
+                  - ec2:DescribeInstanceStatus
+                  - ec2:DescribeInstanceAttribute
+                  - ec2:ModifyInstanceAttribute
+                  - ec2:ModifyInstanceMetadataOptions
+                  - ec2:DescribeInstanceTypes
+                  - ec2:DescribeInstanceCreditSpecifications
+                  - ec2:ModifyInstanceCreditSpecification
+                  - ec2:DescribeImages
+                  - ec2:DescribeVolumes
+                  - ec2:AllocateAddress
+                  - ec2:ReleaseAddress
+                  - ec2:AssociateAddress
+                  - ec2:DisassociateAddress
+                  - ec2:DescribeAddresses
+                  - ec2:DescribeAddressesAttribute
+                  - ec2:DescribeIamInstanceProfileAssociations
+                  - ec2:AssociateIamInstanceProfile
+                  - ec2:DisassociateIamInstanceProfile
+                  - ec2:ReplaceIamInstanceProfileAssociation
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: !Ref AWS::Region
+              - Sid: PrivateDnsForInterfaceEndpoints
+                Effect: Allow
+                Action:
+                  - route53:AssociateVPCWithHostedZone
+                  - route53:DisassociateVPCFromHostedZone
+                Resource: '*'
+              - Sid: Lambda
+                Effect: Allow
+                Action:
+                  - lambda:CreateFunction
+                  - lambda:DeleteFunction
+                  - lambda:GetFunction
+                  - lambda:GetFunctionConfiguration
+                  - lambda:UpdateFunctionCode
+                  - lambda:UpdateFunctionConfiguration
+                  - lambda:TagResource
+                  - lambda:UntagResource
+                  - lambda:ListTags
+                  - lambda:AddPermission
+                  - lambda:RemovePermission
+                  - lambda:GetPolicy
+                  - lambda:GetFunctionCodeSigningConfig
+                  - lambda:GetRuntimeManagementConfig
+                  - lambda:GetFunctionRecursionConfig
+                  - lambda:PutFunctionConcurrency
+                  - lambda:DeleteFunctionConcurrency
+                  - lambda:GetFunctionConcurrency
+                  - lambda:ListVersionsByFunction
+                  - lambda:PutFunctionEventInvokeConfig
+                  - lambda:UpdateFunctionEventInvokeConfig
+                  - lambda:DeleteFunctionEventInvokeConfig
+                  - lambda:GetFunctionEventInvokeConfig
+                Resource: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:medislot-*
+              - Sid: ReadLambdaPackages
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:GetObjectVersion
+                Resource: !Sub '${ArtifactsBucket.Arn}/*'
+        - PolicyName: data-and-config
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: Rds
+                Effect: Allow
+                Action:
+                  - rds:CreateDBInstance
+                  - rds:DeleteDBInstance
+                  - rds:ModifyDBInstance
+                  - rds:RebootDBInstance
+                  - rds:DescribeDBInstances
+                  - rds:CreateDBSubnetGroup
+                  - rds:DeleteDBSubnetGroup
+                  - rds:ModifyDBSubnetGroup
+                  - rds:DescribeDBSubnetGroups
+                  - rds:CreateDBParameterGroup
+                  - rds:DeleteDBParameterGroup
+                  - rds:ModifyDBParameterGroup
+                  - rds:DescribeDBParameterGroups
+                  - rds:DescribeDBParameters
+                  - rds:CreateDBSnapshot
+                  - rds:DescribeDBSnapshots
+                  - rds:DescribeDBEngineVersions
+                  - rds:DescribeOrderableDBInstanceOptions
+                  - rds:AddTagsToResource
+                  - rds:RemoveTagsFromResource
+                  - rds:ListTagsForResource
+                Resource: '*'
+                Condition:
+                  StringEquals:
+                    aws:RequestedRegion: !Ref AWS::Region
+              - Sid: DynamoDb
+                Effect: Allow
+                Action:
+                  - dynamodb:CreateTable
+                  - dynamodb:DeleteTable
+                  - dynamodb:UpdateTable
+                  - dynamodb:DescribeTable
+                  - dynamodb:DescribeTimeToLive
+                  - dynamodb:UpdateTimeToLive
+                  - dynamodb:DescribeContinuousBackups
+                  - dynamodb:UpdateContinuousBackups
+                  - dynamodb:DescribeContributorInsights
+                  - dynamodb:DescribeKinesisStreamingDestination
+                  - dynamodb:GetResourcePolicy
+                  - dynamodb:TagResource
+                  - dynamodb:UntagResource
+                  - dynamodb:ListTagsOfResource
+                Resource: !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-*
+              - Sid: S3Buckets
+                Effect: Allow
+                Action:
+                  - s3:CreateBucket
+                  - s3:DeleteBucket
+                  - s3:ListBucket
+                  - s3:GetBucketLocation
+                  - s3:GetBucketPolicy
+                  - s3:PutBucketPolicy
+                  - s3:DeleteBucketPolicy
+                  - s3:GetBucketTagging
+                  - s3:PutBucketTagging
+                  - s3:GetEncryptionConfiguration
+                  - s3:PutEncryptionConfiguration
+                  - s3:GetBucketPublicAccessBlock
+                  - s3:PutBucketPublicAccessBlock
+                  - s3:GetBucketVersioning
+                  - s3:PutBucketVersioning
+                  - s3:GetBucketCORS
+                  - s3:PutBucketCORS
+                  - s3:GetLifecycleConfiguration
+                  - s3:PutLifecycleConfiguration
+                  - s3:GetBucketOwnershipControls
+                  - s3:PutBucketOwnershipControls
+                  - s3:GetBucketAcl
+                  - s3:GetBucketLogging
+                  - s3:GetBucketNotification
+                  - s3:GetBucketWebsite
+                  - s3:GetBucketObjectLockConfiguration
+                  - s3:GetAccelerateConfiguration
+                  - s3:GetBucketRequestPayment
+                  - s3:GetReplicationConfiguration
+                  - s3:GetAnalyticsConfiguration
+                  - s3:GetMetricsConfiguration
+                  - s3:GetIntelligentTieringConfiguration
+                  - s3:GetInventoryConfiguration
+                Resource: !Sub arn:${AWS::Partition}:s3:::medislot-*
+              - Sid: SsmParameters
+                Effect: Allow
+                Action:
+                  - ssm:PutParameter
+                  - ssm:DeleteParameter
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:AddTagsToResource
+                  - ssm:RemoveTagsFromResource
+                  - ssm:ListTagsForResource
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/*
+              - Sid: PublicAmiParameter
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}::parameter/aws/service/ami-amazon-linux-latest/*
+              - Sid: DescribeParameters
+                Effect: Allow
+                Action: ssm:DescribeParameters
+                Resource: '*'
+        - PolicyName: api-events-monitoring
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ApiGateway
+                Effect: Allow
+                Action:
+                  - apigateway:GET
+                  - apigateway:POST
+                  - apigateway:PUT
+                  - apigateway:PATCH
+                  - apigateway:DELETE
+                Resource:
+                  - !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis
+                  - !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis/*
+                  - !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}::/apis
+                  - !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}::/apis/*
+                  - !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}::/account
+                  - !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}::/tags/*
+              - Sid: LogGroups
+                Effect: Allow
+                Action:
+                  - logs:CreateLogGroup
+                  - logs:DeleteLogGroup
+                  - logs:PutRetentionPolicy
+                  - logs:DeleteRetentionPolicy
+                  - logs:TagResource
+                  - logs:UntagResource
+                  - logs:TagLogGroup
+                  - logs:UntagLogGroup
+                  - logs:ListTagsForResource
+                  - logs:ListTagsLogGroup
+                  - logs:DescribeLogGroups
+                  - logs:GetDataProtectionPolicy
+                  - logs:DescribeIndexPolicies
+                Resource:
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/medislot-*
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/apigateway/medislot-*
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group::log-stream:*
+              - Sid: LogsAccountLevelReads
+                Effect: Allow
+                Action:
+                  - logs:DescribeResourcePolicies
+                  - logs:DescribeLogGroups
+                Resource: '*'
+              - Sid: Scheduler
+                Effect: Allow
+                Action:
+                  - scheduler:CreateSchedule
+                  - scheduler:UpdateSchedule
+                  - scheduler:DeleteSchedule
+                  - scheduler:GetSchedule
+                  - scheduler:CreateScheduleGroup
+                  - scheduler:DeleteScheduleGroup
+                  - scheduler:GetScheduleGroup
+                  - scheduler:TagResource
+                  - scheduler:UntagResource
+                  - scheduler:ListTagsForResource
+                Resource:
+                  - !Sub arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/*/medislot-*
+                  - !Sub arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule-group/*
+              - Sid: EventsAndStepFunctions
+                Effect: Allow
+                Action:
+                  - events:CreateEventBus
+                  - events:DeleteEventBus
+                  - events:DescribeEventBus
+                  - events:PutRule
+                  - events:DeleteRule
+                  - events:DescribeRule
+                  - events:PutTargets
+                  - events:RemoveTargets
+                  - events:ListTargetsByRule
+                  - events:TagResource
+                  - events:UntagResource
+                  - events:ListTagsForResource
+                  - states:CreateStateMachine
+                  - states:UpdateStateMachine
+                  - states:DeleteStateMachine
+                  - states:DescribeStateMachine
+                  - states:TagResource
+                  - states:UntagResource
+                  - states:ListTagsForResource
+                Resource:
+                  - !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/medislot-*
+                  - !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/medislot-*
+                  - !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:medislot-*
+              - Sid: SnsTopics
+                Effect: Allow
+                Action:
+                  - sns:CreateTopic
+                  - sns:DeleteTopic
+                  - sns:GetTopicAttributes
+                  - sns:SetTopicAttributes
+                  - sns:Subscribe
+                  - sns:Unsubscribe
+                  - sns:GetSubscriptionAttributes
+                  - sns:ListSubscriptionsByTopic
+                  - sns:TagResource
+                  - sns:UntagResource
+                  - sns:ListTagsForResource
+                Resource: !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:medislot-*
+              - Sid: CloudWatchAlarmsAndDashboards
+                Effect: Allow
+                Action:
+                  - cloudwatch:PutMetricAlarm
+                  - cloudwatch:DeleteAlarms
+                  - cloudwatch:DescribeAlarms
+                  - cloudwatch:TagResource
+                  - cloudwatch:UntagResource
+                  - cloudwatch:ListTagsForResource
+                  - cloudwatch:PutDashboard
+                  - cloudwatch:DeleteDashboards
+                  - cloudwatch:GetDashboard
+                Resource:
+                  - !Sub arn:${AWS::Partition}:cloudwatch:${AWS::Region}:${AWS::AccountId}:alarm:medislot-*
+                  - !Sub arn:${AWS::Partition}:cloudwatch::${AWS::AccountId}:dashboard/medislot-*
+              - Sid: DescribeAlarmsAccountWide
+                Effect: Allow
+                Action: cloudwatch:DescribeAlarms
+                Resource: '*'
+              - Sid: Budgets
+                Effect: Allow
+                Action:
+                  - budgets:ModifyBudget
+                  - budgets:ViewBudget
+                Resource: !Sub arn:${AWS::Partition}:budgets::${AWS::AccountId}:budget/medislot-*
+        - PolicyName: iam-for-medislot-roles
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ManageMediSlotRolesAndPolicies
+                Effect: Allow
+                Action:
+                  - iam:CreateRole
+                  - iam:DeleteRole
+                  - iam:GetRole
+                  - iam:UpdateRole
+                  - iam:UpdateRoleDescription
+                  - iam:UpdateAssumeRolePolicy
+                  - iam:PutRolePolicy
+                  - iam:DeleteRolePolicy
+                  - iam:GetRolePolicy
+                  - iam:ListRolePolicies
+                  - iam:AttachRolePolicy
+                  - iam:DetachRolePolicy
+                  - iam:ListAttachedRolePolicies
+                  - iam:ListInstanceProfilesForRole
+                  - iam:TagRole
+                  - iam:UntagRole
+                  - iam:ListRoleTags
+                  - iam:CreateInstanceProfile
+                  - iam:DeleteInstanceProfile
+                  - iam:GetInstanceProfile
+                  - iam:AddRoleToInstanceProfile
+                  - iam:RemoveRoleFromInstanceProfile
+                  - iam:TagInstanceProfile
+                  - iam:UntagInstanceProfile
+                  - iam:CreatePolicy
+                  - iam:DeletePolicy
+                  - iam:GetPolicy
+                  - iam:GetPolicyVersion
+                  - iam:CreatePolicyVersion
+                  - iam:DeletePolicyVersion
+                  - iam:ListPolicyVersions
+                  - iam:ListEntitiesForPolicy
+                  - iam:TagPolicy
+                  - iam:UntagPolicy
+                Resource:
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-*
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:instance-profile/medislot-*
+                  - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:policy/medislot-*
+              - Sid: PassMediSlotRolesToServices
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:role/medislot-*
+                Condition:
+                  StringEquals:
+                    iam:PassedToService:
+                      - lambda.amazonaws.com
+                      - ec2.amazonaws.com
+                      - scheduler.amazonaws.com
+                      - apigateway.amazonaws.com
+                      - states.amazonaws.com
+                      - events.amazonaws.com
+              - Sid: ReadAwsManagedPolicies
+                Effect: Allow
+                Action:
+                  - iam:GetPolicy
+                  - iam:GetPolicyVersion
+                Resource: !Sub arn:${AWS::Partition}:iam::aws:policy/*
+
+  # ---------------------------------------------------------------------------
+  # GitHub roles
+  # ---------------------------------------------------------------------------
+  # Assumed only by workflow runs on the main branch (the deploy pipeline).
+  GitHubDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: medislot-github-deploy-role
+      Description: GitHub Actions on main - packages, uploads and deploys through change sets
+      MaxSessionDuration: 7200
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - MakeOidcProvider
+                - !Ref GitHubOidcProvider
+                - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+                token.actions.githubusercontent.com:sub: !Sub repo:${GitHubOwner}/${GitHubRepo}:ref:refs/heads/main
+      Policies:
+        - PolicyName: deploy-through-change-sets
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ChangeSets
+                Effect: Allow
+                Action:
+                  - cloudformation:CreateChangeSet
+                  - cloudformation:DescribeChangeSet
+                  - cloudformation:ExecuteChangeSet
+                  - cloudformation:DeleteChangeSet
+                  - cloudformation:ListChangeSets
+                  - cloudformation:DescribeStacks
+                  - cloudformation:DescribeStackEvents
+                  - cloudformation:DescribeStackResource
+                  - cloudformation:DescribeStackResources
+                  - cloudformation:ListStackResources
+                  - cloudformation:GetTemplate
+                  - cloudformation:DetectStackDrift
+                  - cloudformation:DescribeStackDriftDetectionStatus
+                  - cloudformation:DescribeStackResourceDrifts
+                Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-*/*
+              - Sid: CloudFormationAccountReads
+                Effect: Allow
+                Action:
+                  - cloudformation:ValidateTemplate
+                  - cloudformation:GetTemplateSummary
+                  - cloudformation:ListExports
+                  - cloudformation:ListImports
+                Resource: '*'
+              - Sid: PassOnlyTheExecutionRole
+                Effect: Allow
+                Action: iam:PassRole
+                Resource: !GetAtt CloudFormationExecutionRole.Arn
+                Condition:
+                  StringEquals:
+                    iam:PassedToService: cloudformation.amazonaws.com
+              - Sid: Packages
+                Effect: Allow
+                Action:
+                  - s3:PutObject
+                  - s3:GetObject
+                Resource: !Sub '${ArtifactsBucket.Arn}/*'
+              - Sid: PackagesList
+                Effect: Allow
+                Action: s3:ListBucket
+                Resource: !GetAtt ArtifactsBucket.Arn
+              - Sid: RunMigrationsAndJobs
+                Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource:
+                  - !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:medislot-*-db-migrate
+                  - !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:medislot-*-slot-materialiser
+              - Sid: PreflightChecks
+                Effect: Allow
+                Action:
+                  - ec2:DescribeManagedPrefixLists
+                  - rds:DescribeDBInstances
+                Resource: '*'
+              - Sid: SeededParametersExist
+                Effect: Allow
+                Action: ssm:GetParameter
+                Resource: !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/*
+              - Sid: ImportExistingResources
+                Effect: Allow
+                Action:
+                  - dynamodb:DescribeTable
+                  - s3:ListBucket
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-*
+                  - !Sub arn:${AWS::Partition}:s3:::medislot-*
+
+  # Assumed only by pull-request runs: integration tests against dev. It can
+  # read stack outputs and run the slot materialiser, nothing else.
+  GitHubTestRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: medislot-github-test-role
+      Description: GitHub Actions on pull requests - integration tests only
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - MakeOidcProvider
+                - !Ref GitHubOidcProvider
+                - !Sub arn:${AWS::Partition}:iam::${AWS::AccountId}:oidc-provider/token.actions.githubusercontent.com
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub:
+                  - !Sub repo:${GitHubOwner}/${GitHubRepo}:pull_request
+                  - !Sub repo:${GitHubOwner}/${GitHubRepo}:ref:refs/heads/main
+      Policies:
+        - PolicyName: integration-tests
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadOutputs
+                Effect: Allow
+                Action: cloudformation:DescribeStacks
+                Resource: !Sub arn:${AWS::Partition}:cloudformation:${AWS::Region}:${AWS::AccountId}:stack/medislot-*/*
+              - Sid: RunMaterialiser
+                Effect: Allow
+                Action: lambda:InvokeFunction
+                Resource: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:medislot-dev-slot-materialiser
+
+Outputs:
+  ArtifactsBucketName:
+    Value: !Ref ArtifactsBucket
+    Export:
+      Name: medislot-artifacts-bucket-name
+  CloudFormationExecutionRoleArn:
+    Value: !GetAtt CloudFormationExecutionRole.Arn
+    Export:
+      Name: medislot-cloudformation-execution-role-arn
+  GitHubDeployRoleArn:
+    Description: Put this in the AWS_ROLE_ARN repository secret.
+    Value: !GetAtt GitHubDeployRole.Arn
+  GitHubTestRoleArn:
+    Description: Put this in the AWS_TEST_ROLE_ARN repository secret.
+    Value: !GetAtt GitHubTestRole.Arn

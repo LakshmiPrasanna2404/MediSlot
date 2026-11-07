@@ -1,0 +1,19 @@
+# Keep LF line endings in the working tree on every OS. Shell scripts fail
+# with CRLF ("$'\r': command not found") and yamllint rejects CRLF YAML.
+*.sh    text eol=lf
+*.py    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.sql   text eol=lf
+*.md    text eol=lf
+*.html  text eol=lf
+*.css   text eol=lf
+*.js    text eol=lf
+*.txt   text eol=lf
+*.toml  text eol=lf
+*.json  text eol=lf
+
+*.png   binary
+*.pdf   binary
+*.docx  binary
+*.zip   binary

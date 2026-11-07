@@ -1,117 +1,54 @@
-# MediSlot operations dashboard
+# MediSlot web app (doctor and patient dashboards)
 
-A read-only admin page on its own small EC2 instance. It shows API Gateway, Lambda,
-DynamoDB and RDS health from CloudWatch, the state of the `medislot-{env}-*` alarms,
-and recent errors from the auth and app Lambda logs. It never writes to anything.
+One Flask application on one EC2 instance (`infrastructure/dashboard-stack.yaml`) serving both user types.
 
-Access is limited to one admin IP address (security group) plus a username and password.
-The page is served over plain HTTP, so **the IP restriction is the real protection**.
-Keep `DASHBOARD_ADMIN_CIDR` as narrow as you can (your public IP with `/32`).
-
-## One-time setup (per environment)
-
-The pipeline stops with a clear error if any of this is missing.
-
-### 1. Create the login in SSM
-
-Replace `dev` with `prod` for production. Run these from a shell where the AWS CLI is
-signed in to the right account and region.
-
-```bash
-ENV=dev
-
-# Username
-aws ssm put-parameter --name /medislot/$ENV/dashboard/username \
-  --type SecureString --value "admin"
-
-# Password: this prints a bcrypt hash. Paste your password when asked.
-# The password itself is never stored anywhere.
-HASH=$(python -c "import bcrypt,getpass; print(bcrypt.hashpw(getpass.getpass('Dashboard password: ').encode(), bcrypt.gensalt(12)).decode())")
-aws ssm put-parameter --name /medislot/$ENV/dashboard/password-hash \
-  --type SecureString --value "$HASH"
-
-# Session signing key: 64 random hex characters
-aws ssm put-parameter --name /medislot/$ENV/dashboard/session-secret \
-  --type SecureString --value "$(python -c 'import secrets; print(secrets.token_hex(32))')"
-```
-
-`pip install bcrypt` first if it is not installed. To change the password later, run the
-second command again with `--overwrite`, then restart the service (see Troubleshooting).
-
-### 2. Set GitHub repository variables
-
-Settings > Secrets and variables > Actions > Variables:
-
-| Variable | Required | Value |
+| Route | Who | What |
 |---|---|---|
-| `DASHBOARD_ADMIN_CIDR` | yes | Your public IP with a prefix, for example `203.0.113.7/32` |
-| `ALARM_EMAIL` | no | Address that receives alarm emails |
+| `/` | anyone | Landing page: **Login as Doctor** / **Login as Patient** |
+| `/doctor/login`, `/doctor/register` | anyone | Doctor login and registration |
+| `/patient/login`, `/patient/register` | anyone | Patient login and registration |
+| `/doctor/*` | doctor sessions | Schedule (day and week, booked patients per slot), profile and photo, consultation types, weekly availability, blackout dates |
+| `/patient/*` | patient sessions | Doctor search with filters and pages, doctor profile with fees and a slot browser, own profile |
+| `POST /logout` | signed in | Calls `POST /auth/logout` (revokes the refresh token and the access token) and clears the session |
 
-If your IP changes, update the variable and push (or run the workflow). CloudFormation
-updates the security group in place.
+## How it works
 
-### 3. Deploy, then confirm the alarm email
+- **Pure API client.** No database credentials and no database connection. Every read and write is a call to the
+  MediSlot REST API (`api_client.py`). The instance role can only read its own settings in SSM and its package in S3.
+- **Server-side sessions** (Flask-Session, files under `/var/lib/medislot/sessions`). The JWT access token and the
+  refresh token stay on the server; the browser only holds a random session id (HttpOnly, SameSite=Lax).
+- **Route guards** (`security.py`). The role claim of the JWT in the session decides the portal. A patient session on
+  any `/doctor/*` page goes back to the landing page, and the reverse. No session goes to that portal's login page.
+- **Token refresh.** When the API answers 401 the app rotates the refresh token once and retries; if that fails the
+  user is logged out.
+- **CSRF.** Every form carries a per-session token that is checked on POST.
+- **Correlation ID.** Each page view gets an ID that is sent to the API as `X-Correlation-Id`, so web, API Gateway and
+  Lambda logs for one click can be found together.
+- **Photos** go from the browser straight to S3 with a pre-signed POST (`static/photo.js`), never through the app.
 
-Push to `main`. The pipeline runs `deploy-monitoring` and `deploy-dashboard` after the app
-stack and prints the dashboard URL. If you set `ALARM_EMAIL`, AWS sends a confirmation
-email: click the link or the alarms will not reach you.
+## Settings
 
-## Using it
+| Variable | On EC2 | Locally |
+|---|---|---|
+| API address | `MEDISLOT_API_BASE_URL_PARAMETER` (SSM `/medislot/<env>/api/base-url`, written by the API stack) | `MEDISLOT_API_BASE_URL` |
+| Session key | `MEDISLOT_SESSION_SECRET_PARAMETER` (SSM SecureString `/medislot/<env>/dashboard/session-secret`) | `MEDISLOT_SESSION_SECRET` |
+| Session files | `MEDISLOT_SESSION_DIR` | defaults to `/tmp/medislot-sessions` |
 
-Open the printed URL from the allowed IP and sign in. Pick Last hour / 6 hours / 24 hours;
-everything on the page follows that range. Each chart has a **Table view** with the same
-numbers. Charts update every minute, and CloudWatch results are cached for 2 minutes.
-
-Things that look odd but are expected:
-
-- **Authorizer errors** are rejected tokens. The authorizer raises "Unauthorized" for every
-  bad token, so its Errors count includes normal 401 responses. It has no alarm.
-- **Application metrics** shows "no data yet" until the booking, saga and waitlist code emits
-  metrics in the `medislot` namespace. They appear here without any dashboard change.
-- A missing count (no requests) is drawn as 0. A missing gauge (database CPU) is left as a gap.
-
-## Demo: trigger one alarm
-
-```bash
-aws cloudwatch set-alarm-state --alarm-name medislot-dev-api-5xx \
-  --state-value ALARM --state-reason "demo"
-```
-
-The dashboard shows it in red within about 2 minutes and the email arrives. CloudWatch
-returns the alarm to OK on its next evaluation.
-
-## Updating the dashboard
-
-Every push builds a new package and passes its S3 key to the stack. That changes the
-instance's boot script, so CloudFormation restarts the instance, and the boot script
-downloads and installs the new package. Expect about a minute of downtime per deploy.
-
-## Troubleshooting
-
-The instance has no SSH. To read logs, use the EC2 console: Actions > Monitor and
-troubleshoot > Get system log. The bootstrap script also logs there.
-
-| Symptom | Likely cause |
-|---|---|
-| Page times out | Your IP is not `DASHBOARD_ADMIN_CIDR`, or the instance is still booting |
-| "Dashboard is not configured" | An SSM parameter is missing or `session-secret` is under 32 characters |
-| Panels say "unavailable" | The instance role lacks a CloudWatch permission (check the iam stack deployed) |
-| Everything is empty or 0 | The API id or function names do not match this environment; check `/etc/medislot-dashboard.env` in the system log |
-| Pipeline fails before deploy | A prerequisite above is missing; the error names it |
-
-## Local preview and tests
+## Run locally against the dev API
 
 ```bash
-python -m venv .venv && .venv/Scripts/activate      # or source .venv/bin/activate
-pip install -r dashboard/requirements.txt pytest
-python -m pytest tests -q
+pip install -r dashboard/requirements.txt
+export MEDISLOT_API_BASE_URL=https://<api-id>.execute-api.<region>.amazonaws.com/dev
+export MEDISLOT_SESSION_SECRET=$(python -c 'import secrets; print(secrets.token_hex(32))')
+flask --app dashboard.wsgi run --port 8080
 ```
 
-`StaticCollector` in `dashboard/collectors.py` returns sample data, so the page can be
-developed without AWS credentials.
+Tests: `python -m pytest tests/unit/test_web.py` (the API is mocked).
 
-## Cost
+## Deploying
 
-One `t3.micro` instance, an 8 GB volume, a public IPv4 address (about $3.60 a month) and the
-CloudWatch alarms (the first 10 are free). Delete the dashboard stack when you are not
-using it: `aws cloudformation delete-stack --stack-name medislot-dev-dashboard`.
+The pipeline zips this folder, uploads it to the artifacts bucket and passes the key to the dashboard stack. A new
+key changes the instance's boot script, CloudFormation restarts the instance and the script installs the new
+package. Expect about a minute of downtime per deploy. Boot logs: EC2 console, Actions > Monitor and troubleshoot >
+Get system log. Application logs: connect with Session Manager (there is no SSH) and run
+`journalctl -u medislot-web -n 200`.

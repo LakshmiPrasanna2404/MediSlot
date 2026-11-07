@@ -1,0 +1,56 @@
+{% extends "base.html" %}
+{% block title %}Consultation types · MediSlot{% endblock %}
+{% block content %}
+<h1>Consultation types</h1>
+<section class="card">
+  <h2>Add a type</h2>
+  <form method="post" class="form grid-4">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Type
+      <select name="name" required>
+        {% for name, minutes in CONSULTATION_TYPES.items() %}<option value="{{ name }}">{{ name }} ({{ minutes }} min)</option>{% endfor %}
+      </select></label>
+    <label>Fee (₹) <input type="number" name="fee" min="0" step="0.01" required></label>
+    <label>Capacity <input type="number" name="capacity" min="1" max="10" placeholder="1">
+      <small>2–10 for a Health Camp Session, otherwise 1.</small></label>
+    <label>Description <input name="description" maxlength="255"></label>
+    <div><button type="submit" class="button primary">Add</button></div>
+  </form>
+</section>
+
+<section class="card">
+  <table class="table">
+    <thead><tr><th>Type</th><th>Length</th><th>Capacity</th><th>Fee and description</th><th></th></tr></thead>
+    <tbody>
+    {% for t in types %}
+      <tr class="{{ 'inactive' if not t.is_active }}">
+        <td>{{ t.name }}{% if not t.is_active %} <span class="muted">(removed)</span>{% endif %}</td>
+        <td>{{ t.duration_minutes }} min</td>
+        <td>{{ t.capacity }}</td>
+        <td>
+          {% if t.is_active %}
+          <form method="post" action="{{ url_for('doctor.update_consultation_type', type_id=t.consultation_type_id) }}" class="inline-form">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <input type="number" name="fee" value="{{ t.fee }}" min="0" step="0.01" class="short">
+            {% if t.name == 'Health Camp Session' %}<input type="number" name="capacity" value="{{ t.capacity }}" min="2" max="10" class="short">{% endif %}
+            <input name="description" value="{{ t.description or '' }}" maxlength="255">
+            <button type="submit" class="button small">Save</button>
+          </form>
+          {% else %}{{ t.fee|money }}{% endif %}
+        </td>
+        <td>
+          {% if t.is_active %}
+          <form method="post" action="{{ url_for('doctor.delete_consultation_type', type_id=t.consultation_type_id) }}">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+            <button type="submit" class="link-button danger">Remove</button>
+          </form>
+          {% endif %}
+        </td>
+      </tr>
+    {% else %}
+      <tr><td colspan="5" class="muted">No consultation types yet. Add one above, then set your weekly availability.</td></tr>
+    {% endfor %}
+    </tbody>
+  </table>
+</section>
+{% endblock %}

@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block title %}Find a doctor · MediSlot{% endblock %}
+{% block content %}
+<h1>Find a doctor</h1>
+<section class="card">
+  <form method="get" class="form grid-4">
+    <label>Name starts with <input name="name" value="{{ filters.name }}" maxlength="120" placeholder="Anil"></label>
+    <label>Hospital starts with <input name="hospital" value="{{ filters.hospital }}" maxlength="200" placeholder="Apollo"></label>
+    <label>Specialisation
+      <select name="specialisation">
+        <option value="">Any</option>
+        {% for s in SPECIALISATIONS %}<option {{ 'selected' if filters.specialisation == s }}>{{ s }}</option>{% endfor %}
+      </select></label>
+    <label>City <input name="city" value="{{ filters.city }}" maxlength="100" placeholder="Hyderabad"></label>
+    <div><button type="submit" class="button primary">Search</button>
+      <a class="button" href="{{ url_for('patient.search') }}">Clear</a></div>
+  </form>
+</section>
+
+<section class="results">
+  {% for d in result.doctors %}
+    <a class="doctor-card" href="{{ url_for('patient.doctor', doctor_id=d.doctor_id) }}">
+      {% if d.photo_url %}<img src="{{ d.photo_url }}" alt="" class="avatar small" onerror="this.style.display='none'">
+      {% else %}<div class="avatar small placeholder">{{ d.full_name[:1] }}</div>{% endif %}
+      <div>
+        <div class="doctor-name">{{ d.full_name }}</div>
+        <div class="muted">{{ d.specialisation or 'Specialisation not set' }}{% if d.years_experience is not none %} · {{ d.years_experience }} yrs{% endif %}</div>
+        <div class="muted">{{ d.hospital_name or '' }}{% if d.city %}, {{ d.city }}{% endif %}</div>
+      </div>
+      <div class="fee">{% if d.fee_from is not none %}from {{ d.fee_from|money }}{% endif %}</div>
+    </a>
+  {% else %}
+    <p class="muted">No doctors match these filters.</p>
+  {% endfor %}
+</section>
+
+{% set base_args = filters %}
+<nav class="pager">
+  {% if result.page > 1 %}<a class="button" href="{{ url_for('patient.search', page=result.page - 1, **base_args) }}">Previous</a>{% endif %}
+  <span class="muted">Page {{ result.page }}</span>
+  {% if result.has_more %}<a class="button" href="{{ url_for('patient.search', page=result.page + 1, **base_args) }}">Next</a>{% endif %}
+</nav>
+{% endblock %}

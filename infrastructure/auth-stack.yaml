@@ -1,7 +1,9 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  MediSlot authentication stack with doctor and patient registration,
-  login, JWT refresh, logout, and JWT authorization.
+  MediSlot authentication: the Auth Lambda (register, login, refresh, logout)
+  and the JWT Lambda authorizer, plus the authentication settings in SSM.
+  The JWT signing secret itself is a SecureString seeded once
+  (scripts/seed_secrets.sh) and read by both functions at cold start.
 
 Parameters:
   Environment:
@@ -13,54 +15,25 @@ Parameters:
 
   AuthCodeS3Bucket:
     Type: String
-    Description: S3 bucket containing the packaged Python authentication Lambda code
+    Description: Artifacts bucket holding the Lambda packages
 
   AuthCodeS3Key:
     Type: String
-    Description: S3 object key for the authentication Lambda package
+    Description: S3 key of the Auth Lambda package
 
   AuthorizerCodeS3Bucket:
     Type: String
-    Description: S3 bucket containing the packaged Python authorizer Lambda code
+    Description: Artifacts bucket holding the Lambda packages
 
   AuthorizerCodeS3Key:
     Type: String
-    Description: S3 object key for the authorizer Lambda package
-
-  AuthHandler:
-    Type: String
-    Default: auth_handler.lambda_handler
-    Description: Python module and handler for authentication
-
-  AuthorizerHandler:
-    Type: String
-    Default: authorizer_handler.lambda_handler
-    Description: Python module and handler for JWT authorization
-
-  PythonRuntime:
-    Type: String
-    Default: python3.12
-    AllowedValues:
-      - python3.12
-    Description: Python runtime for authentication Lambdas
+    Description: S3 key of the authorizer Lambda package
 
   LogRetentionDays:
     Type: Number
     Default: 30
-    AllowedValues:
-      - 7
-      - 14
-      - 30
-      - 60
-      - 90
+    AllowedValues: [7, 14, 30, 60, 90]
     Description: CloudWatch log retention period
-
-  AuthTimeout:
-    Type: Number
-    Default: 15
-    MinValue: 1
-    MaxValue: 900
-    Description: Authentication Lambda timeout in seconds
 
   AuthMemorySize:
     Type: Number
@@ -68,31 +41,20 @@ Parameters:
     MinValue: 128
     MaxValue: 10240
     Description: >-
-      Authentication Lambda memory in MB. Password hashing (bcrypt) is
-      CPU-bound and Lambda CPU scales with memory.
-
-  AuthorizerTimeout:
-    Type: Number
-    Default: 10
-    MinValue: 1
-    MaxValue: 900
-    Description: JWT authorizer Lambda timeout in seconds
-
-  AuthorizerMemorySize:
-    Type: Number
-    Default: 128
-    MinValue: 128
-    MaxValue: 10240
-    Description: JWT authorizer Lambda memory in MB
+      Auth Lambda memory in MB. bcrypt at work factor 12 is CPU-bound and Lambda
+      CPU scales with memory, so this keeps login under a second.
 
 Resources:
+  # ---------------------------------------------------------------------------
+  # Authentication settings (frozen rule set). All SSM-configurable.
+  # ---------------------------------------------------------------------------
   AuthAccessTokenSeconds:
     Type: AWS::SSM::Parameter
     Properties:
       Name: !Sub /medislot/${Environment}/auth/access-token-seconds
       Type: String
       Value: '900'
-      Description: Authentication access token lifetime in seconds
+      Description: Access token lifetime in seconds (15 minutes)
       Tags:
         Project: MediSlot
         Environment: !Ref Environment
@@ -103,7 +65,7 @@ Resources:
       Name: !Sub /medislot/${Environment}/auth/refresh-token-seconds
       Type: String
       Value: '604800'
-      Description: Authentication refresh token lifetime in seconds (7 days)
+      Description: Refresh token lifetime in seconds (7 days)
       Tags:
         Project: MediSlot
         Environment: !Ref Environment
@@ -114,7 +76,7 @@ Resources:
       Name: !Sub /medislot/${Environment}/auth/bcrypt-rounds
       Type: String
       Value: '12'
-      Description: Password hashing bcrypt cost factor
+      Description: bcrypt work factor (12 or higher; the Auth Lambda refuses lower)
       Tags:
         Project: MediSlot
         Environment: !Ref Environment
@@ -124,12 +86,26 @@ Resources:
     Properties:
       Name: !Sub /medislot/${Environment}/auth/password-min-length
       Type: String
-      Value: '8'
-      Description: Minimum password length
+      Value: '10'
+      Description: Minimum password length (policy also needs one letter and one digit)
       Tags:
         Project: MediSlot
         Environment: !Ref Environment
 
+  AuthJwtIssuer:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /medislot/${Environment}/auth/jwt-issuer
+      Type: String
+      Value: !Sub medislot-${Environment}
+      Description: Issuer the authorizer checks on every token
+      Tags:
+        Project: MediSlot
+        Environment: !Ref Environment
+
+  # ---------------------------------------------------------------------------
+  # Functions
+  # ---------------------------------------------------------------------------
   AuthFunctionLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
@@ -154,55 +130,45 @@ Resources:
 
   AuthFunction:
     Type: AWS::Lambda::Function
-    DependsOn:
-      - AuthFunctionLogGroup
+    DependsOn: AuthFunctionLogGroup
     Properties:
       FunctionName: !Sub medislot-${Environment}-auth
-      Description: >-
-        Register doctors and patients, authenticate credentials,
-        refresh JWTs, and revoke sessions on logout.
-      Runtime: !Ref PythonRuntime
-      Handler: !Ref AuthHandler
-      Role:
-        Fn::ImportValue:
-          Fn::Sub: medislot-${Environment}-auth-role-arn
-      Timeout: !Ref AuthTimeout
+      Description: Register doctors and patients, log in, refresh and log out
+      Runtime: python3.12
+      Handler: auth_handler.lambda_handler
+      Role: !ImportValue
+        Fn::Sub: medislot-${Environment}-auth-role-arn
+      Timeout: 15
       MemorySize: !Ref AuthMemorySize
-      Architectures:
-        - x86_64
+      Architectures: [x86_64]
       Code:
         S3Bucket: !Ref AuthCodeS3Bucket
         S3Key: !Ref AuthCodeS3Key
       VpcConfig:
         SubnetIds:
-          - Fn::ImportValue:
-              Fn::Sub: medislot-${Environment}-lambda-subnet-az1-id
-          - Fn::ImportValue:
-              Fn::Sub: medislot-${Environment}-lambda-subnet-az2-id
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az1-id
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az2-id
         SecurityGroupIds:
-          - Fn::ImportValue:
-              Fn::Sub: medislot-${Environment}-lambda-sg-id
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-sg-id
       Environment:
         Variables:
           ENVIRONMENT: !Ref Environment
-          DB_HOST:
-            Fn::ImportValue:
-              Fn::Sub: medislot-${Environment}-db-endpoint
-          DB_PORT:
-            Fn::ImportValue:
-              Fn::Sub: medislot-${Environment}-db-port
-          DB_NAME:
-            Fn::ImportValue:
-              Fn::Sub: medislot-${Environment}-db-name
+          DB_HOST: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-endpoint
+          DB_PORT: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-port
+          DB_NAME: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-name
           DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/db/username
           DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
-          TOKEN_REVOCATIONS_TABLE:
-            Fn::ImportValue:
-              Fn::Sub: medislot-${Environment}-token-revocations-table-name
-          REFRESH_TOKENS_TABLE:
-            Fn::ImportValue:
-              Fn::Sub: medislot-${Environment}-refresh-tokens-table-name
           JWT_SECRET_PARAMETER: !Sub /medislot/${Environment}/auth/jwt-secret
+          REFRESH_TOKENS_TABLE: !ImportValue
+            Fn::Sub: medislot-${Environment}-refresh-tokens-table-name
+          TOKEN_REVOCATIONS_TABLE: !ImportValue
+            Fn::Sub: medislot-${Environment}-token-revocations-table-name
       Tags:
         - Key: Project
           Value: MediSlot
@@ -211,41 +177,35 @@ Resources:
 
   AuthorizerFunction:
     Type: AWS::Lambda::Function
-    DependsOn:
-      - AuthorizerFunctionLogGroup
+    DependsOn: AuthorizerFunctionLogGroup
     Properties:
       FunctionName: !Sub medislot-${Environment}-authorizer
-      Description: >-
-        Verify JWT signature and expiry, check token revocation,
-        and return the authenticated user and role context.
-      Runtime: !Ref PythonRuntime
-      Handler: !Ref AuthorizerHandler
-      Role:
-        Fn::ImportValue:
-          Fn::Sub: medislot-${Environment}-authorizer-role-arn
-      Timeout: !Ref AuthorizerTimeout
-      MemorySize: !Ref AuthorizerMemorySize
-      Architectures:
-        - x86_64
+      Description: Verify JWT signature, issuer and expiry, check the denylist and the route role
+      Runtime: python3.12
+      Handler: authorizer_handler.lambda_handler
+      Role: !ImportValue
+        Fn::Sub: medislot-${Environment}-authorizer-role-arn
+      Timeout: 10
+      MemorySize: 256
+      Architectures: [x86_64]
       Code:
         S3Bucket: !Ref AuthorizerCodeS3Bucket
         S3Key: !Ref AuthorizerCodeS3Key
       VpcConfig:
         SubnetIds:
-          - Fn::ImportValue:
-              Fn::Sub: medislot-${Environment}-lambda-subnet-az1-id
-          - Fn::ImportValue:
-              Fn::Sub: medislot-${Environment}-lambda-subnet-az2-id
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az1-id
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az2-id
         SecurityGroupIds:
-          - Fn::ImportValue:
-              Fn::Sub: medislot-${Environment}-lambda-sg-id
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-sg-id
       Environment:
         Variables:
           ENVIRONMENT: !Ref Environment
           JWT_SECRET_PARAMETER: !Sub /medislot/${Environment}/auth/jwt-secret
-          TOKEN_REVOCATIONS_TABLE:
-            Fn::ImportValue:
-              Fn::Sub: medislot-${Environment}-token-revocations-table-name
+          TOKEN_REVOCATIONS_TABLE: !ImportValue
+            Fn::Sub: medislot-${Environment}-token-revocations-table-name
       Tags:
         - Key: Project
           Value: MediSlot
@@ -254,43 +214,21 @@ Resources:
 
 Outputs:
   AuthFunctionName:
-    Description: Authentication Lambda function name
     Value: !Ref AuthFunction
     Export:
       Name: !Sub medislot-${Environment}-auth-function-name
 
   AuthFunctionArn:
-    Description: Authentication Lambda function ARN
     Value: !GetAtt AuthFunction.Arn
     Export:
       Name: !Sub medislot-${Environment}-auth-function-arn
 
   AuthorizerFunctionName:
-    Description: JWT authorizer function name
     Value: !Ref AuthorizerFunction
     Export:
       Name: !Sub medislot-${Environment}-authorizer-function-name
 
   AuthorizerFunctionArn:
-    Description: JWT authorizer Lambda function ARN
     Value: !GetAtt AuthorizerFunction.Arn
     Export:
       Name: !Sub medislot-${Environment}-authorizer-function-arn
-
-  TokenRevocationsTableName:
-    Description: Existing DynamoDB table used for JWT revocation checks
-    Value:
-      Fn::ImportValue:
-        Fn::Sub: medislot-${Environment}-token-revocations-table-name
-
-  RefreshTokensTableName:
-    Description: DynamoDB table for hashed refresh-token sessions
-    Value:
-      Fn::ImportValue:
-        Fn::Sub: medislot-${Environment}-refresh-tokens-table-name
-
-  AuthDatabaseEndpoint:
-    Description: Existing private RDS endpoint
-    Value:
-      Fn::ImportValue:
-        Fn::Sub: medislot-${Environment}-db-endpoint

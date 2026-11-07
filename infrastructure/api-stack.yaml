@@ -1,199 +1,989 @@
 AWSTemplateFormatVersion: '2010-09-09'
-Description: MediSlot shared HTTP API. Owns the API Gateway, authentication routes, CORS and default stage; application routes are added by app-stack.
+Description: >-
+  MediSlot REST API (API Gateway). Public routes: register, login, refresh.
+  Every other route goes through the JWT Lambda authorizer (TOKEN type, cache
+  TTL 0), which rejects bad tokens with 401 and the wrong role with 403.
+  Request bodies are validated against JSON models before any Lambda runs.
+  The deployment's logical ID carries a hash of this template (filled in by
+  scripts/render_api_template.py), so every change to the API is deployed.
 
 Parameters:
   Environment:
     Type: String
-    Description: Deployment environment
     AllowedValues:
       - dev
       - prod
+    Description: Deployment environment; also the stage name
 
-  CorsAllowedOrigins:
-    Type: CommaDelimitedList
-    Default: ''
-    Description: >-
-      Comma-separated browser origins allowed to call the API, for example
-      https://app.example.com. Leave empty if no browser calls the API directly.
-      When set, API Gateway answers CORS preflight (OPTIONS) requests itself;
-      without it an OPTIONS request finds no matching route and gets a 404.
+  DefaultRateLimit:
+    Type: Number
+    Default: 50
+    Description: Steady-state requests per second on every method
 
-  ThrottleRateLimit:
+  DefaultBurstLimit:
     Type: Number
     Default: 100
-    MinValue: 1
-    Description: Steady-state requests per second allowed on every route.
+    Description: Burst requests on every method
 
-  ThrottleBurstLimit:
+  PublicAuthRateLimit:
     Type: Number
-    Default: 200
-    MinValue: 1
-    Description: Burst requests allowed on every route.
+    Default: 10
+    Description: >-
+      Requests per second on register and login. They are public and run bcrypt,
+      so they are capped lower against brute force and cost abuse.
 
-  AuthThrottleRateLimit:
+  PublicAuthBurstLimit:
     Type: Number
     Default: 20
-    MinValue: 1
-    Description: >-
-      Requests per second allowed on register and login. These are public and
-      run bcrypt, so they are capped lower to limit brute-force and cost abuse.
+    Description: Burst requests on register and login
 
-  AuthThrottleBurstLimit:
+  LogRetentionDays:
     Type: Number
-    Default: 40
-    MinValue: 1
-    Description: Burst requests allowed on register and login.
-
-Conditions:
-  HasCorsOrigins: !Not
-    - !Equals
-      - !Join ['', !Ref CorsAllowedOrigins]
-      - ''
+    Default: 30
+    AllowedValues: [7, 14, 30, 60, 90]
+    Description: Access log retention
 
 Resources:
-  AuthHttpApi:
-    Type: AWS::ApiGatewayV2::Api
+  RestApi:
+    Type: AWS::ApiGateway::RestApi
     Properties:
       Name: !Sub medislot-${Environment}-api
-      Description: MediSlot shared doctor and patient API
-      ProtocolType: HTTP
-      CorsConfiguration: !If
-        - HasCorsOrigins
-        - AllowOrigins: !Ref CorsAllowedOrigins
-          AllowMethods:
-            - GET
-            - POST
-            - PUT
-            - PATCH
-            - DELETE
-            - OPTIONS
-          AllowHeaders:
-            - Authorization
-            - Content-Type
-          MaxAge: 3600
-        - !Ref AWS::NoValue
+      Description: MediSlot doctor and patient API
+      EndpointConfiguration:
+        Types: [REGIONAL]
       Tags:
-        Project: MediSlot
-        Environment: !Ref Environment
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+      Body:
+        openapi: 3.0.1
+        info:
+          title: !Sub medislot-${Environment}-api
+          version: '4.0'
+        x-amazon-apigateway-request-validators:
+          body:
+            validateRequestBody: true
+            validateRequestParameters: false
+        paths:
+          '/auth/doctors/register':
+            post:
+              summary: 'Register a doctor'
+              x-amazon-apigateway-request-validator: body
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema:
+                      $ref: '#/components/schemas/DoctorRegistration'
+              security: []
+              responses:
+                default:
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+                  - FunctionArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-auth-function-arn'}
+          '/auth/patients/register':
+            post:
+              summary: 'Register a patient'
+              x-amazon-apigateway-request-validator: body
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema:
+                      $ref: '#/components/schemas/PatientRegistration'
+              security: []
+              responses:
+                default:
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+                  - FunctionArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-auth-function-arn'}
+          '/auth/doctors/login':
+            post:
+              summary: 'Doctor login'
+              x-amazon-apigateway-request-validator: body
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema:
+                      $ref: '#/components/schemas/Login'
+              security: []
+              responses:
+                default:
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+                  - FunctionArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-auth-function-arn'}
+          '/auth/patients/login':
+            post:
+              summary: 'Patient login'
+              x-amazon-apigateway-request-validator: body
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema:
+                      $ref: '#/components/schemas/Login'
+              security: []
+              responses:
+                default:
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+                  - FunctionArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-auth-function-arn'}
+          '/auth/refresh':
+            post:
+              summary: 'Rotate the refresh token, new access token'
+              x-amazon-apigateway-request-validator: body
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema:
+                      $ref: '#/components/schemas/RefreshRequest'
+              security: []
+              responses:
+                default:
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+                  - FunctionArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-auth-function-arn'}
+          '/auth/logout':
+            post:
+              summary: 'Revoke the refresh token and the access token'
+              x-amazon-apigateway-request-validator: body
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema:
+                      $ref: '#/components/schemas/LogoutRequest'
+              security:
+                - JwtAuthorizer: []
+              responses:
+                default:
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+                  - FunctionArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-auth-function-arn'}
+          '/doctors/me':
+            get:
+              summary: 'The calling doctor''s profile'
+              security:
+                - JwtAuthorizer: []
+              responses:
+                default:
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+                  - FunctionArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-doctor-profile-function-arn'}
+            put:
+              summary: 'Update the calling doctor''s profile'
+              x-amazon-apigateway-request-validator: body
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema:
+                      $ref: '#/components/schemas/DoctorProfileUpdate'
+              security:
+                - JwtAuthorizer: []
+              responses:
+                default:
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+                  - FunctionArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-doctor-profile-function-arn'}
+          '/doctors/me/photo':
+            post:
+              summary: 'Pre-signed S3 POST for a profile photo'
+              x-amazon-apigateway-request-validator: body
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema:
+                      $ref: '#/components/schemas/PhotoUploadRequest'
+              security:
+                - JwtAuthorizer: []
+              responses:
+                default:
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+                  - FunctionArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-photo-upload-function-arn'}
+          '/doctors/me/consultation-types':
+            get:
+              summary: 'List consultation types'
+              security:
+                - JwtAuthorizer: []
+              responses:
+                default:
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+                  - FunctionArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-consultation-types-function-arn'}
+            post:
+              summary: 'Create a consultation type'
+              x-amazon-apigateway-request-validator: body
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema:
+                      $ref: '#/components/schemas/ConsultationTypeCreate'
+              security:
+                - JwtAuthorizer: []
+              responses:
+                default:
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+                  - FunctionArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-consultation-types-function-arn'}
+          '/doctors/me/consultation-types/{consultationTypeId}':
+            put:
+              summary: 'Update a consultation type'
+              parameters:
+                - name: consultationTypeId
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+              x-amazon-apigateway-request-validator: body
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema:
+                      $ref: '#/components/schemas/ConsultationTypeUpdate'
+              security:
+                - JwtAuthorizer: []
+              responses:
+                default:
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+                  - FunctionArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-consultation-types-function-arn'}
+            delete:
+              summary: 'Deactivate a consultation type'
+              parameters:
+                - name: consultationTypeId
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+              security:
+                - JwtAuthorizer: []
+              responses:
+                default:
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+                  - FunctionArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-consultation-types-function-arn'}
+          '/doctors/me/availability':
+            get:
+              summary: 'Weekly availability patterns'
+              security:
+                - JwtAuthorizer: []
+              responses:
+                default:
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+                  - FunctionArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-availability-function-arn'}
+            put:
+              summary: 'Replace the weekly availability patterns'
+              x-amazon-apigateway-request-validator: body
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema:
+                      $ref: '#/components/schemas/AvailabilityReplace'
+              security:
+                - JwtAuthorizer: []
+              responses:
+                default:
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+                  - FunctionArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-availability-function-arn'}
+          '/doctors/me/blackouts':
+            get:
+              summary: 'List blackout dates'
+              security:
+                - JwtAuthorizer: []
+              responses:
+                default:
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+                  - FunctionArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-availability-function-arn'}
+            post:
+              summary: 'Add a blackout date'
+              x-amazon-apigateway-request-validator: body
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema:
+                      $ref: '#/components/schemas/BlackoutCreate'
+              security:
+                - JwtAuthorizer: []
+              responses:
+                default:
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+                  - FunctionArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-availability-function-arn'}
+          '/doctors/me/blackouts/{blackoutId}':
+            delete:
+              summary: 'Remove a blackout date'
+              parameters:
+                - name: blackoutId
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+              security:
+                - JwtAuthorizer: []
+              responses:
+                default:
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+                  - FunctionArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-availability-function-arn'}
+          '/doctors/me/schedule':
+            get:
+              summary: 'Day or week view with booked patients'
+              security:
+                - JwtAuthorizer: []
+              responses:
+                default:
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+                  - FunctionArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-schedule-function-arn'}
+          '/doctors/me/appointments':
+            get:
+              summary: 'The doctor''s appointments in a date range'
+              security:
+                - JwtAuthorizer: []
+              responses:
+                default:
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+                  - FunctionArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-schedule-function-arn'}
+          '/patients/me':
+            get:
+              summary: 'The calling patient''s profile'
+              security:
+                - JwtAuthorizer: []
+              responses:
+                default:
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+                  - FunctionArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-patient-profile-function-arn'}
+            put:
+              summary: 'Update the calling patient''s profile'
+              x-amazon-apigateway-request-validator: body
+              requestBody:
+                required: true
+                content:
+                  application/json:
+                    schema:
+                      $ref: '#/components/schemas/PatientProfileUpdate'
+              security:
+                - JwtAuthorizer: []
+              responses:
+                default:
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+                  - FunctionArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-patient-profile-function-arn'}
+            delete:
+              summary: 'Delete or deactivate the calling patient''s account'
+              security:
+                - JwtAuthorizer: []
+              responses:
+                default:
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+                  - FunctionArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-patient-profile-function-arn'}
+          '/doctors':
+            get:
+              summary: 'Search doctors by name, hospital, specialisation, city'
+              security:
+                - JwtAuthorizer: []
+              responses:
+                default:
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+                  - FunctionArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-doctor-search-function-arn'}
+          '/doctors/{doctorId}':
+            get:
+              summary: 'Public doctor profile with consultation types and fees'
+              parameters:
+                - name: doctorId
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+              security:
+                - JwtAuthorizer: []
+              responses:
+                default:
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+                  - FunctionArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-doctor-search-function-arn'}
+          '/doctors/{doctorId}/slots':
+            get:
+              summary: 'Open slots with free seats'
+              parameters:
+                - name: doctorId
+                  in: path
+                  required: true
+                  schema:
+                    type: string
+              security:
+                - JwtAuthorizer: []
+              responses:
+                default:
+                  description: Lambda proxy response
+              x-amazon-apigateway-integration:
+                type: aws_proxy
+                httpMethod: POST
+                passthroughBehavior: when_no_match
+                uri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${FunctionArn}/invocations
+                  - FunctionArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-slot-lookup-function-arn'}
+        components:
+          securitySchemes:
+            JwtAuthorizer:
+              type: apiKey
+              name: Authorization
+              in: header
+              x-amazon-apigateway-authtype: custom
+              x-amazon-apigateway-authorizer:
+                type: token
+                identityValidationExpression: '^Bearer [-0-9A-Za-z._~+/]+=*$'
+                # 0: every request is checked, so a logged-out token is refused at once.
+                authorizerResultTtlInSeconds: 0
+                authorizerUri: !Sub
+                  - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuthorizerArn}/invocations
+                  - AuthorizerArn: !ImportValue {'Fn::Sub': 'medislot-${Environment}-authorizer-function-arn'}
+          schemas:
+            Login:
+              type: 'object'
+              additionalProperties: false
+              required:
+                - 'email'
+                - 'password'
+              properties:
+                email:
+                  type: 'string'
+                password:
+                  type: 'string'
+            RefreshRequest:
+              type: 'object'
+              additionalProperties: false
+              required:
+                - 'refresh_token'
+              properties:
+                refresh_token:
+                  type: 'string'
+            LogoutRequest:
+              type: 'object'
+              additionalProperties: false
+              properties:
+                refresh_token:
+                  type: 'string'
+            DoctorRegistration:
+              type: 'object'
+              additionalProperties: false
+              required:
+                - 'full_name'
+                - 'email'
+                - 'password'
+                - 'licence_number'
+              properties:
+                full_name:
+                  type: 'string'
+                email:
+                  type: 'string'
+                password:
+                  type: 'string'
+                licence_number:
+                  type: 'string'
+                specialisation:
+                  type: 'string'
+                hospital_name:
+                  type: 'string'
+                hospital_address:
+                  type: 'string'
+                hospital_city:
+                  type: 'string'
+                qualifications:
+                  type: 'string'
+                languages:
+                  type: 'string'
+                timezone:
+                  type: 'string'
+                years_experience: {}
+            PatientRegistration:
+              type: 'object'
+              additionalProperties: false
+              required:
+                - 'full_name'
+                - 'email'
+                - 'password'
+              properties:
+                full_name:
+                  type: 'string'
+                email:
+                  type: 'string'
+                password:
+                  type: 'string'
+                date_of_birth:
+                  type: 'string'
+                gender:
+                  type: 'string'
+                phone:
+                  type: 'string'
+                address:
+                  type: 'string'
+                city:
+                  type: 'string'
+                emergency_contact_name:
+                  type: 'string'
+                emergency_contact_phone:
+                  type: 'string'
+            DoctorProfileUpdate:
+              type: 'object'
+              additionalProperties: false
+              properties:
+                full_name:
+                  type: 'string'
+                licence_number:
+                  type: 'string'
+                specialisation:
+                  type: 'string'
+                hospital_name:
+                  type: 'string'
+                hospital_address:
+                  type: 'string'
+                hospital_city:
+                  type: 'string'
+                qualifications:
+                  type: 'string'
+                languages:
+                  type: 'string'
+                timezone:
+                  type: 'string'
+                years_experience: {}
+            PatientProfileUpdate:
+              type: 'object'
+              additionalProperties: false
+              properties:
+                full_name:
+                  type: 'string'
+                date_of_birth:
+                  type: 'string'
+                gender:
+                  type: 'string'
+                phone:
+                  type: 'string'
+                address:
+                  type: 'string'
+                city:
+                  type: 'string'
+                emergency_contact_name:
+                  type: 'string'
+                emergency_contact_phone:
+                  type: 'string'
+            PhotoUploadRequest:
+              type: 'object'
+              additionalProperties: false
+              required:
+                - 'content_type'
+              properties:
+                content_type:
+                  type: 'string'
+                  enum:
+                    - 'image/jpeg'
+                    - 'image/png'
+                    - 'image/webp'
+            ConsultationTypeCreate:
+              type: 'object'
+              additionalProperties: false
+              required:
+                - 'name'
+                - 'fee'
+              properties:
+                name:
+                  type: 'string'
+                description:
+                  type: 'string'
+                fee: {}
+                duration_minutes: {}
+                capacity: {}
+            ConsultationTypeUpdate:
+              type: 'object'
+              additionalProperties: false
+              properties:
+                name:
+                  type: 'string'
+                description:
+                  type: 'string'
+                fee: {}
+                duration_minutes: {}
+                capacity: {}
+            AvailabilityReplace:
+              type: 'object'
+              additionalProperties: false
+              required:
+                - 'patterns'
+              properties:
+                patterns:
+                  type: 'array'
+                  maxItems: 50
+                  items:
+                    type: 'object'
+                    additionalProperties: false
+                    required:
+                      - 'consultation_type_id'
+                      - 'day_of_week'
+                      - 'start_time'
+                      - 'end_time'
+                    properties:
+                      consultation_type_id: {}
+                      day_of_week: {}
+                      start_time:
+                        type: 'string'
+                        pattern: '^[0-9]{2}:[0-9]{2}$'
+                      end_time:
+                        type: 'string'
+                        pattern: '^[0-9]{2}:[0-9]{2}$'
+            BlackoutCreate:
+              type: 'object'
+              additionalProperties: false
+              required:
+                - 'date'
+              properties:
+                date:
+                  type: 'string'
+                  pattern: '^[0-9]{4}-[0-9]{2}-[0-9]{2}$'
+                reason:
+                  type: 'string'
+        x-amazon-apigateway-gateway-responses:
+          UNAUTHORIZED:
+            statusCode: 401
+            responseTemplates:
+              application/json: '{"error":"Unauthorized"}'
+          ACCESS_DENIED:
+            statusCode: 403
+            responseTemplates:
+              application/json: '{"error":"Forbidden: this account type cannot use this route"}'
+          MISSING_AUTHENTICATION_TOKEN:
+            statusCode: 404
+            responseTemplates:
+              application/json: '{"error":"Route not found"}'
+          BAD_REQUEST_BODY:
+            statusCode: 400
+            responseTemplates:
+              application/json: '{"error":"Invalid request body"}'
+          THROTTLED:
+            statusCode: 429
+            responseTemplates:
+              application/json: '{"error":"Too many requests"}'
+          DEFAULT_5XX:
+            responseTemplates:
+              application/json: '{"error":"Internal server error"}'
 
-  AuthApiIntegration:
-    Type: AWS::ApiGatewayV2::Integration
+  # Logical ID suffix RENDERHASH is replaced with a hash of this template, so
+  # any change to the API creates a new deployment for the stage.
+  ApiDeploymentRENDERHASH:
+    Type: AWS::ApiGateway::Deployment
     Properties:
-      ApiId: !Ref AuthHttpApi
-      IntegrationType: AWS_PROXY
-      IntegrationMethod: POST
-      IntegrationUri:
-        Fn::ImportValue:
-          Fn::Sub: medislot-${Environment}-auth-function-arn
-      PayloadFormatVersion: '2.0'
-      TimeoutInMillis: 15000
+      RestApiId: !Ref RestApi
+      Description: Template hash RENDERHASH
 
-  DoctorRegisterRoute:
-    Type: AWS::ApiGatewayV2::Route
+  AccessLogGroup:
+    Type: AWS::Logs::LogGroup
     Properties:
-      ApiId: !Ref AuthHttpApi
-      RouteKey: 'POST /auth/doctors/register'
-      Target: !Sub integrations/${AuthApiIntegration}
-      AuthorizationType: NONE
+      LogGroupName: !Sub /aws/apigateway/medislot-${Environment}-api-access
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
 
-  DoctorLoginRoute:
-    Type: AWS::ApiGatewayV2::Route
+  # Account-level setting: the role API Gateway uses to write access logs.
+  ApiGatewayAccount:
+    Type: AWS::ApiGateway::Account
     Properties:
-      ApiId: !Ref AuthHttpApi
-      RouteKey: 'POST /auth/doctors/login'
-      Target: !Sub integrations/${AuthApiIntegration}
-      AuthorizationType: NONE
+      CloudWatchRoleArn: !ImportValue
+        Fn::Sub: medislot-${Environment}-apigateway-logs-role-arn
 
-  PatientRegisterRoute:
-    Type: AWS::ApiGatewayV2::Route
+  ApiStage:
+    Type: AWS::ApiGateway::Stage
+    DependsOn: ApiGatewayAccount
     Properties:
-      ApiId: !Ref AuthHttpApi
-      RouteKey: 'POST /auth/patients/register'
-      Target: !Sub integrations/${AuthApiIntegration}
-      AuthorizationType: NONE
+      RestApiId: !Ref RestApi
+      StageName: !Ref Environment
+      DeploymentId: !Ref ApiDeploymentRENDERHASH
+      AccessLogSetting:
+        DestinationArn: !GetAtt AccessLogGroup.Arn
+        Format: '{"requestId":"$context.requestId","correlationId":"$context.requestId","ip":"$context.identity.sourceIp","method":"$context.httpMethod","resource":"$context.resourcePath","status":"$context.status","latencyMs":"$context.responseLatency","integrationLatencyMs":"$context.integrationLatency","authorizerStatus":"$context.authorizer.status","userId":"$context.authorizer.userId","role":"$context.authorizer.role","error":"$context.error.responseType"}'
+      MethodSettings:
+        - ResourcePath: '/*'
+          HttpMethod: '*'
+          ThrottlingRateLimit: !Ref DefaultRateLimit
+          ThrottlingBurstLimit: !Ref DefaultBurstLimit
+          MetricsEnabled: false
+        - ResourcePath: '/~1auth~1doctors~1register'
+          HttpMethod: POST
+          ThrottlingRateLimit: !Ref PublicAuthRateLimit
+          ThrottlingBurstLimit: !Ref PublicAuthBurstLimit
+        - ResourcePath: '/~1auth~1patients~1register'
+          HttpMethod: POST
+          ThrottlingRateLimit: !Ref PublicAuthRateLimit
+          ThrottlingBurstLimit: !Ref PublicAuthBurstLimit
+        - ResourcePath: '/~1auth~1doctors~1login'
+          HttpMethod: POST
+          ThrottlingRateLimit: !Ref PublicAuthRateLimit
+          ThrottlingBurstLimit: !Ref PublicAuthBurstLimit
+        - ResourcePath: '/~1auth~1patients~1login'
+          HttpMethod: POST
+          ThrottlingRateLimit: !Ref PublicAuthRateLimit
+          ThrottlingBurstLimit: !Ref PublicAuthBurstLimit
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
 
-  PatientLoginRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref AuthHttpApi
-      RouteKey: 'POST /auth/patients/login'
-      Target: !Sub integrations/${AuthApiIntegration}
-      AuthorizationType: NONE
-
-  RefreshRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref AuthHttpApi
-      RouteKey: 'POST /auth/refresh'
-      Target: !Sub integrations/${AuthApiIntegration}
-      AuthorizationType: NONE
-
-  # Logout is authenticated by the refresh token itself, sent in the JSON body
-  # or as the Bearer value. An access token is optional, so no authorizer here.
-  LogoutRoute:
-    Type: AWS::ApiGatewayV2::Route
-    Properties:
-      ApiId: !Ref AuthHttpApi
-      RouteKey: 'POST /auth/logout'
-      Target: !Sub integrations/${AuthApiIntegration}
-      AuthorizationType: NONE
-
-  # Allow API Gateway to invoke the authentication Lambda integration.
-  AuthApiInvokePermission:
+  AuthorizerInvokePermission:
     Type: AWS::Lambda::Permission
     Properties:
-      FunctionName:
-        Fn::ImportValue:
-          Fn::Sub: medislot-${Environment}-auth-function-arn
+      FunctionName: !ImportValue
+        Fn::Sub: medislot-${Environment}-authorizer-function-arn
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
-      SourceArn: !Sub
-        - arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/*/*
-        - ApiId: !Ref AuthHttpApi
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/authorizers/*
 
-  AuthApiStage:
-    Type: AWS::ApiGatewayV2::Stage
-    # Route settings can only be applied once their routes exist.
-    DependsOn:
-      - DoctorRegisterRoute
-      - DoctorLoginRoute
-      - PatientRegisterRoute
-      - PatientLoginRoute
-      - RefreshRoute
-      - LogoutRoute
+  AuthInvokePermission:
+    Type: AWS::Lambda::Permission
     Properties:
-      ApiId: !Ref AuthHttpApi
-      StageName: '$default'
-      AutoDeploy: true
-      DefaultRouteSettings:
-        ThrottlingRateLimit: !Ref ThrottleRateLimit
-        ThrottlingBurstLimit: !Ref ThrottleBurstLimit
-      RouteSettings:
-        'POST /auth/doctors/register':
-          ThrottlingRateLimit: !Ref AuthThrottleRateLimit
-          ThrottlingBurstLimit: !Ref AuthThrottleBurstLimit
-        'POST /auth/doctors/login':
-          ThrottlingRateLimit: !Ref AuthThrottleRateLimit
-          ThrottlingBurstLimit: !Ref AuthThrottleBurstLimit
-        'POST /auth/patients/register':
-          ThrottlingRateLimit: !Ref AuthThrottleRateLimit
-          ThrottlingBurstLimit: !Ref AuthThrottleBurstLimit
-        'POST /auth/patients/login':
-          ThrottlingRateLimit: !Ref AuthThrottleRateLimit
-          ThrottlingBurstLimit: !Ref AuthThrottleBurstLimit
-      Tags:
-        Project: MediSlot
-        Environment: !Ref Environment
+      FunctionName: !ImportValue
+        Fn::Sub: medislot-${Environment}-auth-function-arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*
+
+  DoctorProfileInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !ImportValue
+        Fn::Sub: medislot-${Environment}-doctor-profile-function-arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*
+
+  PhotoUploadInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !ImportValue
+        Fn::Sub: medislot-${Environment}-photo-upload-function-arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*
+
+  ConsultationTypesInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !ImportValue
+        Fn::Sub: medislot-${Environment}-consultation-types-function-arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*
+
+  AvailabilityInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !ImportValue
+        Fn::Sub: medislot-${Environment}-availability-function-arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*
+
+  ScheduleInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !ImportValue
+        Fn::Sub: medislot-${Environment}-schedule-function-arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*
+
+  PatientProfileInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !ImportValue
+        Fn::Sub: medislot-${Environment}-patient-profile-function-arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*
+
+  DoctorSearchInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !ImportValue
+        Fn::Sub: medislot-${Environment}-doctor-search-function-arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*
+
+  SlotLookupInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !ImportValue
+        Fn::Sub: medislot-${Environment}-slot-lookup-function-arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*
+
+  # The web app reads the API address from here, so the web stack does not
+  # depend on this stack's exports.
+  ApiBaseUrlParameter:
+    Type: AWS::SSM::Parameter
+    Properties:
+      Name: !Sub /medislot/${Environment}/api/base-url
+      Type: String
+      Value: !Sub https://${RestApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}
+      Description: MediSlot REST API base URL (read by the web app)
 
 Outputs:
   ApiUrl:
-    Description: Base URL for the shared MediSlot API
-    Value: !GetAtt AuthHttpApi.ApiEndpoint
+    Description: Base URL of the MediSlot REST API
+    Value: !Sub https://${RestApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}
     Export:
       Name: !Sub medislot-${Environment}-api-url
 
   ApiId:
-    Description: Shared API Gateway ID
-    Value: !Ref AuthHttpApi
+    Value: !Ref RestApi
     Export:
       Name: !Sub medislot-${Environment}-api-id
+
+  ApiName:
+    Description: API name (the ApiName dimension of AWS/ApiGateway metrics)
+    Value: !Sub medislot-${Environment}-api

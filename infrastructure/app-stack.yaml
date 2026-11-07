@@ -1,71 +1,58 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  MediSlot application stack. Adds doctor and patient application Lambda routes
-  and the JWT Lambda authorizer to the shared API created by api-stack.
+  MediSlot application Lambdas, one per function in the architecture diagrams (doctor: profile, photo upload, consultation types, availability and blackouts, schedule; patient: profile, doctor search, slot lookup) plus the db-migrate function the pipeline runs after each deployment. All run in the private Lambda subnets; API Gateway routes are added by api-stack.
 
 Parameters:
   Environment:
     Type: String
-    Description: Deployment environment
     AllowedValues:
       - dev
       - prod
+    Description: Deployment environment
 
-  AppCodeS3Bucket:
+  CodeS3Bucket:
     Type: String
-    Description: S3 bucket containing the application Lambda deployment package
+    Description: Artifacts bucket holding the Lambda packages
 
-  AppCodeS3Key:
+  DoctorProfileCodeS3Key:
     Type: String
-    Description: S3 object key for the application Lambda deployment package
-
-  AppHandler:
+    Description: S3 key of the doctor-profile package (content-addressed, built by scripts/build_lambdas.py)
+  PhotoUploadCodeS3Key:
     Type: String
-    Default: app_handler.lambda_handler
-    Description: Python module and handler for the application Lambda
-
-  PythonRuntime:
+    Description: S3 key of the photo-upload package (content-addressed, built by scripts/build_lambdas.py)
+  ConsultationTypesCodeS3Key:
     Type: String
-    Default: python3.12
-    AllowedValues:
-      - python3.12
-
-  AppTimeout:
-    Type: Number
-    Default: 30
-    MinValue: 3
-    MaxValue: 30
-    Description: Application Lambda timeout in seconds; must not exceed the HTTP API integration timeout
-
-  AppMemorySize:
-    Type: Number
-    Default: 512
-    AllowedValues:
-      - 256
-      - 512
-      - 1024
-      - 1536
-      - 2048
+    Description: S3 key of the consultation-types package (content-addressed, built by scripts/build_lambdas.py)
+  AvailabilityCodeS3Key:
+    Type: String
+    Description: S3 key of the availability package (content-addressed, built by scripts/build_lambdas.py)
+  ScheduleCodeS3Key:
+    Type: String
+    Description: S3 key of the schedule package (content-addressed, built by scripts/build_lambdas.py)
+  PatientProfileCodeS3Key:
+    Type: String
+    Description: S3 key of the patient-profile package (content-addressed, built by scripts/build_lambdas.py)
+  DoctorSearchCodeS3Key:
+    Type: String
+    Description: S3 key of the doctor-search package (content-addressed, built by scripts/build_lambdas.py)
+  SlotLookupCodeS3Key:
+    Type: String
+    Description: S3 key of the slot-lookup package (content-addressed, built by scripts/build_lambdas.py)
+  DbMigrateCodeS3Key:
+    Type: String
+    Description: S3 key of the db-migrate package (content-addressed, built by scripts/build_lambdas.py)
 
   LogRetentionDays:
     Type: Number
     Default: 30
-    AllowedValues:
-      - 7
-      - 14
-      - 30
-      - 60
-      - 90
-
+    AllowedValues: [7, 14, 30, 60, 90]
+    Description: CloudWatch log retention period
 
 Resources:
-  # ---------------------------------------------------------
-  # Application Lambda logs
-  # ---------------------------------------------------------
-  AppFunctionLogGroup:
+  DoctorProfileLogGroup:
     Type: AWS::Logs::LogGroup
     Properties:
-      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-app
+      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-doctor-profile
       RetentionInDays: !Ref LogRetentionDays
       Tags:
         - Key: Project
@@ -73,213 +60,558 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # ---------------------------------------------------------
-  # Main application Lambda
-  # ---------------------------------------------------------
-  AppFunction:
+  DoctorProfileFunction:
     Type: AWS::Lambda::Function
-    DependsOn:
-      - AppFunctionLogGroup
+    DependsOn: DoctorProfileLogGroup
     Properties:
-      FunctionName: !Sub medislot-${Environment}-app
-      Description: MediSlot doctor and patient application operations
-      Runtime: !Ref PythonRuntime
-      Handler: !Ref AppHandler
-      Role:
-        Fn::ImportValue:
-          Fn::Sub: medislot-${Environment}-app-role-arn
-      Timeout: !Ref AppTimeout
-      MemorySize: !Ref AppMemorySize
-      Architectures:
-        - x86_64
+      FunctionName: !Sub medislot-${Environment}-doctor-profile
+      Description: 'Doctor Profile: get and update the profile'
+      Runtime: python3.12
+      Handler: handler.lambda_handler
+      Role: !ImportValue
+        Fn::Sub: medislot-${Environment}-doctor-profile-role-arn
+      Timeout: 20
+      MemorySize: 512
+      Architectures: [x86_64]
       Code:
-        S3Bucket: !Ref AppCodeS3Bucket
-        S3Key: !Ref AppCodeS3Key
+        S3Bucket: !Ref CodeS3Bucket
+        S3Key: !Ref DoctorProfileCodeS3Key
       VpcConfig:
         SubnetIds:
-          - Fn::ImportValue:
-              Fn::Sub: medislot-${Environment}-lambda-subnet-az1-id
-          - Fn::ImportValue:
-              Fn::Sub: medislot-${Environment}-lambda-subnet-az2-id
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az1-id
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az2-id
         SecurityGroupIds:
-          - Fn::ImportValue:
-              Fn::Sub: medislot-${Environment}-lambda-sg-id
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-sg-id
       Environment:
         Variables:
           ENVIRONMENT: !Ref Environment
-
-          DB_HOST:
-            Fn::ImportValue:
-              Fn::Sub: medislot-${Environment}-db-endpoint
-
-          DB_PORT:
-            Fn::ImportValue:
-              Fn::Sub: medislot-${Environment}-db-port
-
-          DB_NAME:
-            Fn::ImportValue:
-              Fn::Sub: medislot-${Environment}-db-name
-
-          # Corrected to match DATA stack parameter paths
+          DB_HOST: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-endpoint
+          DB_PORT: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-port
+          DB_NAME: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-name
           DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/db/username
           DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
-
-          SLOTS_TABLE: !Sub medislot-${Environment}-slots
-          SEATS_TABLE: !Sub medislot-${Environment}-seats
-          WAITLIST_TABLE: !Sub medislot-${Environment}-waitlist
-          HOLD_OFFERS_TABLE: !Sub medislot-${Environment}-hold-offers
-          IDEMPOTENCY_TABLE: !Sub medislot-${Environment}-idempotency
-          DISPATCH_LOG_TABLE: !Sub medislot-${Environment}-dispatch-log
-
-          DOCTOR_FILES_BUCKET:
-            Fn::ImportValue:
-              Fn::Sub: medislot-${Environment}-doctor-files-bucket-name
-
+          SLOTS_TABLE: !ImportValue
+            Fn::Sub: medislot-${Environment}-slots-table-name
+          DOCTOR_FILES_BUCKET: !ImportValue
+            Fn::Sub: medislot-${Environment}-doctor-files-bucket-name
       Tags:
         - Key: Project
           Value: MediSlot
         - Key: Environment
           Value: !Ref Environment
 
-  # Shared HTTP API is created by api-stack; this stack adds application routes.
-
-  # Protected application Lambda integration
-  AppApiIntegration:
-    Type: AWS::ApiGatewayV2::Integration
+  PhotoUploadLogGroup:
+    Type: AWS::Logs::LogGroup
     Properties:
-      ApiId:
-        Fn::ImportValue:
-          Fn::Sub: medislot-${Environment}-api-id
-      IntegrationType: AWS_PROXY
-      IntegrationMethod: POST
-      IntegrationUri: !GetAtt AppFunction.Arn
-      PayloadFormatVersion: '2.0'
-      TimeoutInMillis: 30000
+      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-photo-upload
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
 
-  # Existing JWT Lambda authorizer
-  AppJwtAuthorizer:
-    Type: AWS::ApiGatewayV2::Authorizer
+  PhotoUploadFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: PhotoUploadLogGroup
     Properties:
-      ApiId:
-        Fn::ImportValue:
-          Fn::Sub: medislot-${Environment}-api-id
-      Name: !Sub medislot-${Environment}-jwt-authorizer
-      AuthorizerType: REQUEST
-      AuthorizerUri:
-        Fn::Sub:
-          - arn:${AWS::Partition}:apigateway:${AWS::Region}:lambda:path/2015-03-31/functions/${AuthorizerArn}/invocations
-          - AuthorizerArn:
-              Fn::ImportValue:
-                Fn::Sub: medislot-${Environment}-authorizer-function-arn
-      IdentitySource:
-        - $request.header.Authorization
-      AuthorizerPayloadFormatVersion: '1.0'
-      EnableSimpleResponses: false
-      AuthorizerResultTtlInSeconds: 0
+      FunctionName: !Sub medislot-${Environment}-photo-upload
+      Description: 'Photo Upload: pre-signed S3 POST for the profile photo'
+      Runtime: python3.12
+      Handler: handler.lambda_handler
+      Role: !ImportValue
+        Fn::Sub: medislot-${Environment}-photo-upload-role-arn
+      Timeout: 10
+      MemorySize: 256
+      Architectures: [x86_64]
+      Code:
+        S3Bucket: !Ref CodeS3Bucket
+        S3Key: !Ref PhotoUploadCodeS3Key
+      VpcConfig:
+        SubnetIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az1-id
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az2-id
+        SecurityGroupIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-sg-id
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          DB_HOST: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-endpoint
+          DB_PORT: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-port
+          DB_NAME: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-name
+          DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/db/username
+          DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
+          DOCTOR_FILES_BUCKET: !ImportValue
+            Fn::Sub: medislot-${Environment}-doctor-files-bucket-name
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
 
-
-  # ---------------------------------------------------------
-  # Protected application routes
-  # ---------------------------------------------------------
-  AppDefaultRoute:
-    Type: AWS::ApiGatewayV2::Route
+  ConsultationTypesLogGroup:
+    Type: AWS::Logs::LogGroup
     Properties:
-      ApiId:
-        Fn::ImportValue:
-          Fn::Sub: medislot-${Environment}-api-id
-      RouteKey: '$default'
-      Target: !Sub integrations/${AppApiIntegration}
-      AuthorizationType: CUSTOM
-      AuthorizerId: !Ref AppJwtAuthorizer
+      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-consultation-types
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
 
-  # Public doctor discovery routes override the protected $default route.
-  PublicDoctorsRoute:
-    Type: AWS::ApiGatewayV2::Route
+  ConsultationTypesFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: ConsultationTypesLogGroup
     Properties:
-      ApiId:
-        Fn::ImportValue:
-          Fn::Sub: medislot-${Environment}-api-id
-      RouteKey: 'GET /doctors'
-      Target: !Sub integrations/${AppApiIntegration}
-      AuthorizationType: NONE
+      FunctionName: !Sub medislot-${Environment}-consultation-types
+      Description: 'Consultation Types: create, update, list, delete'
+      Runtime: python3.12
+      Handler: handler.lambda_handler
+      Role: !ImportValue
+        Fn::Sub: medislot-${Environment}-consultation-types-role-arn
+      Timeout: 10
+      MemorySize: 256
+      Architectures: [x86_64]
+      Code:
+        S3Bucket: !Ref CodeS3Bucket
+        S3Key: !Ref ConsultationTypesCodeS3Key
+      VpcConfig:
+        SubnetIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az1-id
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az2-id
+        SecurityGroupIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-sg-id
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          DB_HOST: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-endpoint
+          DB_PORT: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-port
+          DB_NAME: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-name
+          DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/db/username
+          DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
 
-  PublicDoctorProfileRoute:
-    Type: AWS::ApiGatewayV2::Route
+  AvailabilityLogGroup:
+    Type: AWS::Logs::LogGroup
     Properties:
-      ApiId:
-        Fn::ImportValue:
-          Fn::Sub: medislot-${Environment}-api-id
-      RouteKey: 'GET /doctors/{doctorId}'
-      Target: !Sub integrations/${AppApiIntegration}
-      AuthorizationType: NONE
+      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-availability
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
 
-  PublicDoctorSlotsRoute:
-    Type: AWS::ApiGatewayV2::Route
+  AvailabilityFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: AvailabilityLogGroup
     Properties:
-      ApiId:
-        Fn::ImportValue:
-          Fn::Sub: medislot-${Environment}-api-id
-      RouteKey: 'GET /doctors/{doctorId}/slots'
-      Target: !Sub integrations/${AppApiIntegration}
-      AuthorizationType: NONE
+      FunctionName: !Sub medislot-${Environment}-availability
+      Description: 'Availability and Blackouts: weekly patterns and blackout dates, then slot sync'
+      Runtime: python3.12
+      Handler: handler.lambda_handler
+      Role: !ImportValue
+        Fn::Sub: medislot-${Environment}-availability-role-arn
+      Timeout: 30
+      MemorySize: 512
+      Architectures: [x86_64]
+      Code:
+        S3Bucket: !Ref CodeS3Bucket
+        S3Key: !Ref AvailabilityCodeS3Key
+      VpcConfig:
+        SubnetIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az1-id
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az2-id
+        SecurityGroupIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-sg-id
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          DB_HOST: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-endpoint
+          DB_PORT: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-port
+          DB_NAME: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-name
+          DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/db/username
+          DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
+          SLOTS_TABLE: !ImportValue
+            Fn::Sub: medislot-${Environment}-slots-table-name
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
 
-  # ---------------------------------------------------------
-  # Lambda invocation permissions
-  # ---------------------------------------------------------
-  AppApiInvokePermission:
-    Type: AWS::Lambda::Permission
+  ScheduleLogGroup:
+    Type: AWS::Logs::LogGroup
     Properties:
-      FunctionName: !GetAtt AppFunction.Arn
-      Action: lambda:InvokeFunction
-      Principal: apigateway.amazonaws.com
-      SourceArn: !Sub
-        - arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/*/*
-        - ApiId:
-            Fn::ImportValue:
-              Fn::Sub: medislot-${Environment}-api-id
+      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-schedule
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
 
-
-  AppAuthorizerInvokePermission:
-    Type: AWS::Lambda::Permission
+  ScheduleFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: ScheduleLogGroup
     Properties:
-      FunctionName:
-        Fn::ImportValue:
-          Fn::Sub: medislot-${Environment}-authorizer-function-arn
-      Action: lambda:InvokeFunction
-      Principal: apigateway.amazonaws.com
-      SourceArn: !Sub
-        - arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${ApiId}/authorizers/${AuthorizerId}
-        - ApiId:
-            Fn::ImportValue:
-              Fn::Sub: medislot-${Environment}-api-id
-          AuthorizerId: !Ref AppJwtAuthorizer
+      FunctionName: !Sub medislot-${Environment}-schedule
+      Description: 'Schedule: day and week view with booked patients'
+      Runtime: python3.12
+      Handler: handler.lambda_handler
+      Role: !ImportValue
+        Fn::Sub: medislot-${Environment}-schedule-role-arn
+      Timeout: 15
+      MemorySize: 512
+      Architectures: [x86_64]
+      Code:
+        S3Bucket: !Ref CodeS3Bucket
+        S3Key: !Ref ScheduleCodeS3Key
+      VpcConfig:
+        SubnetIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az1-id
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az2-id
+        SecurityGroupIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-sg-id
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          DB_HOST: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-endpoint
+          DB_PORT: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-port
+          DB_NAME: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-name
+          DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/db/username
+          DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
+          SLOTS_TABLE: !ImportValue
+            Fn::Sub: medislot-${Environment}-slots-table-name
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
 
+  PatientProfileLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-patient-profile
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  PatientProfileFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: PatientProfileLogGroup
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-patient-profile
+      Description: 'Patient Profile: get, update, delete'
+      Runtime: python3.12
+      Handler: handler.lambda_handler
+      Role: !ImportValue
+        Fn::Sub: medislot-${Environment}-patient-profile-role-arn
+      Timeout: 10
+      MemorySize: 256
+      Architectures: [x86_64]
+      Code:
+        S3Bucket: !Ref CodeS3Bucket
+        S3Key: !Ref PatientProfileCodeS3Key
+      VpcConfig:
+        SubnetIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az1-id
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az2-id
+        SecurityGroupIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-sg-id
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          DB_HOST: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-endpoint
+          DB_PORT: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-port
+          DB_NAME: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-name
+          DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/db/username
+          DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
+          TOKEN_REVOCATIONS_TABLE: !ImportValue
+            Fn::Sub: medislot-${Environment}-token-revocations-table-name
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  DoctorSearchLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-doctor-search
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  DoctorSearchFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: DoctorSearchLogGroup
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-doctor-search
+      Description: 'Doctor Search: filtered search and public profile'
+      Runtime: python3.12
+      Handler: handler.lambda_handler
+      Role: !ImportValue
+        Fn::Sub: medislot-${Environment}-doctor-search-role-arn
+      Timeout: 15
+      MemorySize: 512
+      Architectures: [x86_64]
+      Code:
+        S3Bucket: !Ref CodeS3Bucket
+        S3Key: !Ref DoctorSearchCodeS3Key
+      VpcConfig:
+        SubnetIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az1-id
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az2-id
+        SecurityGroupIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-sg-id
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          DB_HOST: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-endpoint
+          DB_PORT: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-port
+          DB_NAME: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-name
+          DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/db/username
+          DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
+          DOCTOR_FILES_BUCKET: !ImportValue
+            Fn::Sub: medislot-${Environment}-doctor-files-bucket-name
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  SlotLookupLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-slot-lookup
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  SlotLookupFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: SlotLookupLogGroup
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-slot-lookup
+      Description: 'Slot Lookup: open slots with free seats'
+      Runtime: python3.12
+      Handler: handler.lambda_handler
+      Role: !ImportValue
+        Fn::Sub: medislot-${Environment}-slot-lookup-role-arn
+      Timeout: 15
+      MemorySize: 512
+      Architectures: [x86_64]
+      Code:
+        S3Bucket: !Ref CodeS3Bucket
+        S3Key: !Ref SlotLookupCodeS3Key
+      VpcConfig:
+        SubnetIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az1-id
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az2-id
+        SecurityGroupIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-sg-id
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          DB_HOST: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-endpoint
+          DB_PORT: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-port
+          DB_NAME: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-name
+          DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/db/username
+          DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
+          SLOTS_TABLE: !ImportValue
+            Fn::Sub: medislot-${Environment}-slots-table-name
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  DbMigrateLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-db-migrate
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  DbMigrateFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: DbMigrateLogGroup
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-db-migrate
+      Description: 'Schema migrations and RDS connectivity check (invoked by the pipeline)'
+      Runtime: python3.12
+      Handler: handler.lambda_handler
+      Role: !ImportValue
+        Fn::Sub: medislot-${Environment}-db-migrate-role-arn
+      Timeout: 120
+      MemorySize: 256
+      Architectures: [x86_64]
+      Code:
+        S3Bucket: !Ref CodeS3Bucket
+        S3Key: !Ref DbMigrateCodeS3Key
+      VpcConfig:
+        SubnetIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az1-id
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az2-id
+        SecurityGroupIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-sg-id
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          DB_HOST: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-endpoint
+          DB_PORT: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-port
+          DB_NAME: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-name
+          DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/db/username
+          DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
 
 Outputs:
-  AppFunctionName:
-    Description: MediSlot application Lambda function name
-    Value: !Ref AppFunction
+  DoctorProfileFunctionArn:
+    Value: !GetAtt DoctorProfileFunction.Arn
     Export:
-      Name: !Sub medislot-${Environment}-app-function-name
-
-  AppFunctionArn:
-    Description: MediSlot application Lambda function ARN
-    Value: !GetAtt AppFunction.Arn
+      Name: !Sub medislot-${Environment}-doctor-profile-function-arn
+  DoctorProfileFunctionName:
+    Value: !Ref DoctorProfileFunction
     Export:
-      Name: !Sub medislot-${Environment}-app-function-arn
-
-  AppApiUrl:
-    Description: Base URL for the shared doctor and patient API
-    Value:
-      Fn::ImportValue:
-        Fn::Sub: medislot-${Environment}-api-url
+      Name: !Sub medislot-${Environment}-doctor-profile-function-name
+  PhotoUploadFunctionArn:
+    Value: !GetAtt PhotoUploadFunction.Arn
     Export:
-      Name: !Sub medislot-${Environment}-app-api-url
-
-  AppApiId:
-    Description: Shared API Gateway ID
-    Value:
-      Fn::ImportValue:
-        Fn::Sub: medislot-${Environment}-api-id
+      Name: !Sub medislot-${Environment}-photo-upload-function-arn
+  PhotoUploadFunctionName:
+    Value: !Ref PhotoUploadFunction
     Export:
-      Name: !Sub medislot-${Environment}-app-api-id
+      Name: !Sub medislot-${Environment}-photo-upload-function-name
+  ConsultationTypesFunctionArn:
+    Value: !GetAtt ConsultationTypesFunction.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-consultation-types-function-arn
+  ConsultationTypesFunctionName:
+    Value: !Ref ConsultationTypesFunction
+    Export:
+      Name: !Sub medislot-${Environment}-consultation-types-function-name
+  AvailabilityFunctionArn:
+    Value: !GetAtt AvailabilityFunction.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-availability-function-arn
+  AvailabilityFunctionName:
+    Value: !Ref AvailabilityFunction
+    Export:
+      Name: !Sub medislot-${Environment}-availability-function-name
+  ScheduleFunctionArn:
+    Value: !GetAtt ScheduleFunction.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-schedule-function-arn
+  ScheduleFunctionName:
+    Value: !Ref ScheduleFunction
+    Export:
+      Name: !Sub medislot-${Environment}-schedule-function-name
+  PatientProfileFunctionArn:
+    Value: !GetAtt PatientProfileFunction.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-patient-profile-function-arn
+  PatientProfileFunctionName:
+    Value: !Ref PatientProfileFunction
+    Export:
+      Name: !Sub medislot-${Environment}-patient-profile-function-name
+  DoctorSearchFunctionArn:
+    Value: !GetAtt DoctorSearchFunction.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-doctor-search-function-arn
+  DoctorSearchFunctionName:
+    Value: !Ref DoctorSearchFunction
+    Export:
+      Name: !Sub medislot-${Environment}-doctor-search-function-name
+  SlotLookupFunctionArn:
+    Value: !GetAtt SlotLookupFunction.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-slot-lookup-function-arn
+  SlotLookupFunctionName:
+    Value: !Ref SlotLookupFunction
+    Export:
+      Name: !Sub medislot-${Environment}-slot-lookup-function-name
+  DbMigrateFunctionArn:
+    Value: !GetAtt DbMigrateFunction.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-db-migrate-function-arn
+  DbMigrateFunctionName:
+    Value: !Ref DbMigrateFunction
+    Export:
+      Name: !Sub medislot-${Environment}-db-migrate-function-name
