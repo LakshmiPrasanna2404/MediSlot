@@ -1,64 +1,81 @@
 {% extends "base.html" %}
 {% block title %}{{ doctor.full_name }} · MediSlot{% endblock %}
 {% block content %}
-<p><a href="{{ url_for('patient.search') }}">← Back to search</a></p>
+<a class="back-link" href="{{ url_for('patient.search') }}">{{ icon('arrow-left', 16) }}Back to search</a>
+
+<section class="card doctor-hero">
+  {% if doctor.photo_url %}<img src="{{ doctor.photo_url }}" alt="" class="avatar md" onerror="this.style.display='none'">
+  {% else %}<span class="avatar md" aria-hidden="true">{{ doctor.full_name|initials }}</span>{% endif %}
+  <div class="item-main">
+    <h1>{{ doctor.full_name }}</h1>
+    <div>{% if doctor.specialisation %}<span class="chip chip-accent">{{ doctor.specialisation }}</span>{% endif %}</div>
+    <ul class="facts">
+      {% if doctor.hospital_name %}<li>{{ icon('hospital', 17) }}<span><small>Hospital</small>{{ doctor.hospital_name }}{% if doctor.hospital_address %}, {{ doctor.hospital_address }}{% endif %}{% if doctor.city %}, {{ doctor.city }}{% endif %}</span></li>{% endif %}
+      {% if doctor.years_experience is not none %}<li>{{ icon('briefcase', 17) }}<span><small>Experience</small>{{ doctor.years_experience }} years</span></li>{% endif %}
+      {% if doctor.qualifications %}<li>{{ icon('cap', 17) }}<span><small>Qualifications</small>{{ doctor.qualifications }}</span></li>{% endif %}
+      {% if doctor.languages %}<li>{{ icon('message', 17) }}<span><small>Languages</small>{{ doctor.languages }}</span></li>{% endif %}
+    </ul>
+  </div>
+</section>
+
 <div class="columns">
-  <section class="card photo-card">
-    {% if doctor.photo_url %}<img src="{{ doctor.photo_url }}" alt="" class="avatar" onerror="this.style.display='none'">
-    {% else %}<div class="avatar placeholder">{{ doctor.full_name[:1] }}</div>{% endif %}
-    <h1 class="doctor-title">{{ doctor.full_name }}</h1>
-    <p class="muted">{{ doctor.specialisation or '' }}</p>
-    <dl class="facts">
-      {% if doctor.hospital_name %}<dt>Hospital</dt><dd>{{ doctor.hospital_name }}{% if doctor.hospital_address %}, {{ doctor.hospital_address }}{% endif %}{% if doctor.city %}, {{ doctor.city }}{% endif %}</dd>{% endif %}
-      {% if doctor.years_experience is not none %}<dt>Experience</dt><dd>{{ doctor.years_experience }} years</dd>{% endif %}
-      {% if doctor.qualifications %}<dt>Qualifications</dt><dd>{{ doctor.qualifications }}</dd>{% endif %}
-      {% if doctor.languages %}<dt>Languages</dt><dd>{{ doctor.languages }}</dd>{% endif %}
-    </dl>
-  </section>
-  <section class="card grow">
+  <section class="card side">
     <h2>Consultations</h2>
-    <table class="table">
-      <thead><tr><th>Type</th><th>Length</th><th>Fee</th></tr></thead>
-      <tbody>
+    {% if doctor.consultation_types %}
+      <ul class="plain-list type-card-list">
       {% for t in doctor.consultation_types %}
-        <tr><td>{{ t.name }}{% if t.capacity > 1 %} <span class="muted">(group of {{ t.capacity }})</span>{% endif %}
-          {% if t.description %}<div class="muted">{{ t.description }}</div>{% endif %}</td>
-          <td>{{ t.duration_minutes }} min</td><td>{{ t.fee|money }}</td></tr>
-      {% else %}
-        <tr><td colspan="3" class="muted">This doctor has not published consultations yet.</td></tr>
+        <li>
+          <span class="item-main">
+            <span class="item-title">{{ t.name }}</span>
+            <span class="item-meta">
+              <span>{{ icon('clock', 14) }}{{ t.duration_minutes }} min</span>
+              {% if t.capacity > 1 %}<span>{{ icon('users', 14) }}Group of {{ t.capacity }}</span>{% endif %}
+            </span>
+            {% if t.description %}<span class="muted">{{ t.description }}</span>{% endif %}
+          </span>
+          <span class="type-fee">{{ t.fee|money }}</span>
+        </li>
       {% endfor %}
-      </tbody>
-    </table>
+      </ul>
+    {% else %}
+      <p class="muted">This doctor has not published consultations yet.</p>
+    {% endif %}
+  </section>
+
+  <section class="card grow">
+    <div class="section-head">
+      <h2>Open slots</h2>
+      <form method="get" class="inline-form">
+        <label>From <input type="date" name="from" value="{{ params['from'] }}"></label>
+        <label>To <input type="date" name="to" value="{{ params['to'] }}"></label>
+        <label>Type
+          <select name="consultationTypeId">
+            <option value="">All types</option>
+            {% for t in doctor.consultation_types %}<option value="{{ t.consultation_type_id }}" {{ 'selected' if params.get('consultationTypeId') == t.consultation_type_id|string }}>{{ t.name }}</option>{% endfor %}
+          </select></label>
+        <button type="submit" class="button">Show</button>
+      </form>
+    </div>
+    <div class="note">{{ icon('info') }}<span>Times are in the doctor's time zone ({{ timezone }}). Online booking opens in the next release.</span></div>
+    {% for day, day_slots in slots_by_day.items() %}
+      {% set open_count = day_slots|selectattr('free_seats')|list|length %}
+      <h3 class="day-label">{{ day|long_date }} <small>{{ open_count }} open</small></h3>
+      <div class="slot-grid">
+        {% for s in day_slots %}
+          <div class="slot {{ 'full' if s.free_seats == 0 }}">
+            <span class="slot-time">{{ s.local_start|local_time }}</span>
+            <span class="slot-type">{{ s.consultation_type_name }}</span>
+            <span class="slot-fee">{{ s.fee|money }}</span>
+            <span class="slot-seats">{% if s.free_seats == 0 %}Full{% else %}{{ s.free_seats }} of {{ s.capacity }} free{% endif %}</span>
+          </div>
+        {% endfor %}
+      </div>
+    {% else %}
+      <div class="empty">
+        {{ icon('calendar', 24) }}
+        <p><strong>No open slots in this range.</strong> Try a later date range or another consultation type.</p>
+      </div>
+    {% endfor %}
   </section>
 </div>
-
-<section class="card">
-  <div class="page-head">
-    <h2>Available slots</h2>
-    <form method="get" class="inline-form">
-      <label>From <input type="date" name="from" value="{{ params['from'] }}"></label>
-      <label>To <input type="date" name="to" value="{{ params['to'] }}"></label>
-      <select name="consultationTypeId">
-        <option value="">All types</option>
-        {% for t in doctor.consultation_types %}<option value="{{ t.consultation_type_id }}" {{ 'selected' if params.get('consultationTypeId') == t.consultation_type_id|string }}>{{ t.name }}</option>{% endfor %}
-      </select>
-      <button type="submit" class="button">Show</button>
-    </form>
-  </div>
-  <p class="muted">Times are in the doctor's time zone ({{ timezone }}). Online booking opens in the next release.</p>
-  {% for day, day_slots in slots_by_day.items() %}
-    <h3>{{ day|long_date }}</h3>
-    <div class="slot-grid">
-      {% for s in day_slots %}
-        <div class="slot {{ 'full' if s.free_seats == 0 }}">
-          <div class="slot-time">{{ s.local_start|local_time }}</div>
-          <div class="muted">{{ s.consultation_type_name }} · {{ s.fee|money }}</div>
-          <div>{% if s.free_seats == 0 %}Full{% else %}{{ s.free_seats }} of {{ s.capacity }} free{% endif %}</div>
-        </div>
-      {% endfor %}
-    </div>
-  {% else %}
-    <p class="muted">No open slots in this range.</p>
-  {% endfor %}
-</section>
 {% endblock %}

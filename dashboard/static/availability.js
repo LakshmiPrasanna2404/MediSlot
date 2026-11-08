@@ -4,9 +4,10 @@
   if (!table) return;
 
   table.addEventListener("click", function (event) {
-    if (!event.target.classList.contains("remove-row")) return;
+    const button = event.target.closest(".remove-row");
+    if (!button) return;
     const rows = table.querySelectorAll(".pattern-row");
-    const row = event.target.closest("tr");
+    const row = button.closest("tr");
     if (rows.length > 1) {
       row.remove();
     } else {

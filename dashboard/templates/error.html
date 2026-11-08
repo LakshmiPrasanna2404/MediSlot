@@ -1,8 +1,17 @@
 {% extends "base.html" %}
+{% block title %}{{ message }} · MediSlot{% endblock %}
 {% block content %}
-<section class="card narrow">
-  <h1>{{ status }}</h1>
-  <p>{{ message }}</p>
-  <p><a href="{{ url_for('auth.landing') }}">Back to the start</a></p>
+<section class="card error-page">
+  <div class="empty">
+    {{ icon('alert-circle', 24) }}
+    <p class="error-code">Error {{ status }}</p>
+    <h1>{{ message }}</h1>
+  </div>
+  <div class="actions">
+    {% if session_role %}
+      <a class="button primary" href="{{ url_for('doctor.schedule' if session_role == 'doctor' else 'patient.search') }}">Go to your dashboard</a>
+    {% endif %}
+    <a class="button" href="{{ url_for('auth.landing') }}">Back to the start</a>
+  </div>
 </section>
 {% endblock %}

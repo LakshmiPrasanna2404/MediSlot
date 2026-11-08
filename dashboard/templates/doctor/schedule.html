@@ -2,43 +2,72 @@
 {% block title %}Schedule · MediSlot{% endblock %}
 {% block content %}
 <div class="page-head">
-  <h1>Schedule</h1>
-  <form method="get" class="inline-form">
-    <input type="date" name="date" value="{{ data.get('from', '') }}">
-    <select name="view">
-      <option value="day" {{ 'selected' if view == 'day' }}>Day</option>
-      <option value="week" {{ 'selected' if view == 'week' }}>Week</option>
-    </select>
+  <div>
+    <h1>Schedule</h1>
+    {% if data.get('timezone') %}<p>Times are in your time zone ({{ data.get('timezone') }}).</p>{% endif %}
+  </div>
+  <form method="get" class="toolbar">
+    <label class="sr-only" for="schedule-date">Date</label>
+    <input id="schedule-date" type="date" name="date" value="{{ data.get('from', '') }}">
+    <div class="segmented" role="group" aria-label="View">
+      <label><input type="radio" name="view" value="day" {{ 'checked' if view == 'day' }}><span>Day</span></label>
+      <label><input type="radio" name="view" value="week" {{ 'checked' if view == 'week' }}><span>Week</span></label>
+    </div>
     <button type="submit" class="button">Show</button>
+    <a class="button ghost" href="{{ url_for('doctor.schedule', view=view) }}">Today</a>
   </form>
 </div>
-<p class="muted">Times are in your time zone ({{ data.get('timezone') }}).</p>
 
 {% for day in data.get('days', []) %}
-  <section class="card">
-    <h2>{{ day.date|long_date }}</h2>
+  <section class="card day-card">
+    <header class="day-head">
+      <h2>{{ day.date|long_date }}</h2>
+      {% if day.slots %}
+        {% set booked = day.slots|sum(attribute='booked_count') %}
+        <p class="day-summary">{{ day.slots|length }} slot{{ 's' if day.slots|length != 1 }}, {{ booked }} booked</p>
+      {% endif %}
+    </header>
     {% if not day.slots %}
-      <p class="muted">No slots. Add weekly availability, or this is a blackout date.</p>
+      <div class="empty">
+        {{ icon('calendar', 24) }}
+        <p><strong>No slots on this day.</strong> It may be a blackout date, or you have no weekly hours on this day.</p>
+        <a href="{{ url_for('doctor.availability') }}">Set weekly availability</a>
+      </div>
     {% else %}
-      <table class="table">
-        <thead><tr><th>Time</th><th>Type</th><th>Seats</th><th>Booked patients</th><th>Status</th></tr></thead>
+      <table class="table stack">
+        <thead><tr><th>Time</th><th>Consultation</th><th>Seats</th><th>Booked patients</th><th>Status</th></tr></thead>
         <tbody>
         {% for slot in day.slots %}
+          {% set held = slot.held_count or 0 %}
           <tr>
-            <td class="nowrap">{{ slot.local_start|local_time }} – {{ slot.local_end|local_time }}</td>
-            <td>{{ slot.consultation_type_name }}</td>
-            <td><span class="seats {{ 'full' if slot.free_seats == 0 }}">{{ slot.booked_count }}/{{ slot.capacity }} booked</span>
-              {% if slot.held_count %}<span class="muted">· {{ slot.held_count }} held</span>{% endif %}</td>
-            <td>
-              {% for p in slot.patients %}<div>{{ p.patient_name }} <span class="muted">{{ p.status|lower }}</span></div>
+            <td data-label="Time" class="time-cell nowrap">{{ slot.local_start|local_time }}<span class="time-end">to {{ slot.local_end|local_time }}</span></td>
+            <td data-label="Consultation">{{ slot.consultation_type_name }}</td>
+            <td data-label="Seats">
+              <span class="seats">
+                {% if slot.capacity <= 10 %}
+                  <span class="seat-meter" aria-hidden="true">{% for i in range(slot.capacity) %}<i class="{{ 'booked' if i < slot.booked_count else 'held' if i < slot.booked_count + held }}"></i>{% endfor %}</span>
+                {% endif %}
+                <span>{{ slot.booked_count }}/{{ slot.capacity }} booked</span>
+                {% if held %}<span class="chip chip-warn">{{ held }} held</span>{% endif %}
+              </span>
+            </td>
+            <td data-label="Patients">
+              {% for p in slot.patients %}<div class="patient">{{ p.patient_name }} <span class="chip status-{{ p.status|lower }}">{{ p.status|capitalize }}</span></div>
               {% else %}<span class="muted">None yet</span>{% endfor %}
             </td>
-            <td>{{ slot.status|lower }}</td>
+            <td data-label="Status"><span class="chip status-{{ slot.status|lower }}">{{ slot.status|capitalize }}</span></td>
           </tr>
         {% endfor %}
         </tbody>
       </table>
     {% endif %}
+  </section>
+{% else %}
+  <section class="card">
+    <div class="empty">
+      {{ icon('calendar', 24) }}
+      <p>Your schedule could not be loaded. Try again in a moment.</p>
+    </div>
   </section>
 {% endfor %}
 {% endblock %}

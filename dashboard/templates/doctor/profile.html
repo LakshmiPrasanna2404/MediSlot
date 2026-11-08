@@ -1,47 +1,67 @@
 {% extends "base.html" %}
 {% block title %}Profile · MediSlot{% endblock %}
 {% block content %}
-<h1>Your profile</h1>
+<div class="page-head">
+  <div>
+    <h1>Your profile</h1>
+    <p>Patients see these details on your page when they search.</p>
+  </div>
+</div>
 <div class="columns">
-  <section class="card photo-card">
+  <section class="card side profile-card">
     {% if profile.photo_url %}
       <img src="{{ profile.photo_url }}" alt="Profile photo" class="avatar" onerror="this.style.display='none'">
     {% else %}
-      <div class="avatar placeholder">{{ profile.full_name[:1] }}</div>
+      <div class="avatar" aria-hidden="true">{{ profile.full_name|initials }}</div>
     {% endif %}
-    <form id="photo-form" class="form">
+    <h2>{{ profile.full_name }}</h2>
+    {% if profile.specialisation %}<span class="chip chip-accent">{{ profile.specialisation }}</span>{% endif %}
+
+    <form id="photo-form" class="form photo-form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label>New photo (JPEG, PNG or WebP, up to 5 MB)
-        <input type="file" id="photo-file" accept="image/jpeg,image/png,image/webp" required></label>
-      <button type="submit" class="button">Upload photo</button>
-      <p id="photo-status" class="muted"></p>
+      <label>New photo
+        <input type="file" id="photo-file" accept="image/jpeg,image/png,image/webp" required>
+        <small>JPEG, PNG or WebP, up to 5 MB.</small></label>
+      <button type="submit" class="button">{{ icon('upload', 16) }}Upload photo</button>
+      <p id="photo-status" class="muted" role="status"></p>
     </form>
-    <dl class="facts">
-      <dt>Licence</dt><dd>{{ profile.licence_number }}</dd>
-      <dt>Email</dt><dd>{{ profile.email }}</dd>
-    </dl>
+
+    <ul class="facts">
+      <li>{{ icon('id-card', 17) }}<span><small>Licence</small>{{ profile.licence_number }}</span></li>
+      <li>{{ icon('mail', 17) }}<span><small>Email</small>{{ profile.email }}</span></li>
+    </ul>
   </section>
 
   <section class="card grow">
-    <form method="post" class="form grid-2">
+    <form method="post" class="form">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label>Full name <input name="full_name" value="{{ profile.full_name }}" required maxlength="120"></label>
-      <label>Specialisation
-        <select name="specialisation">
-          {% if not profile.specialisation %}<option value="">Choose…</option>{% endif %}
-          {% for s in SPECIALISATIONS %}<option {{ 'selected' if profile.specialisation == s }}>{{ s }}</option>{% endfor %}
-        </select></label>
-      <label>Hospital or clinic <input name="hospital_name" value="{{ profile.hospital.name if profile.hospital else '' }}" maxlength="200"></label>
-      <label>Hospital city <input name="hospital_city" value="{{ profile.hospital.city if profile.hospital else '' }}" maxlength="100"></label>
-      <label class="span-2">Hospital address <input name="hospital_address" value="{{ profile.hospital.address if profile.hospital and profile.hospital.address else '' }}" maxlength="255"></label>
-      <label>Years of experience <input type="number" name="years_experience" min="0" max="80" value="{{ profile.years_experience if profile.years_experience is not none else '' }}"></label>
-      <label>Qualifications <input name="qualifications" value="{{ profile.qualifications or '' }}" maxlength="255"></label>
-      <label>Languages spoken <input name="languages" value="{{ profile.languages or '' }}" maxlength="100"></label>
-      <label>Time zone
-        <input name="timezone" list="timezones" value="{{ profile.timezone }}">
-        <datalist id="timezones">{% for tz in TIMEZONES %}<option value="{{ tz }}">{% endfor %}</datalist>
-        <small>Your weekly availability is in this zone. Changing it moves your future open slots.</small></label>
-      <div class="span-2"><button type="submit" class="button primary">Save profile</button></div>
+      <fieldset>
+        <legend>About you</legend>
+        <div class="form grid-2">
+          <label>Full name <input name="full_name" value="{{ profile.full_name }}" required maxlength="120"></label>
+          <label>Specialisation
+            <select name="specialisation">
+              {% if not profile.specialisation %}<option value="">Choose…</option>{% endif %}
+              {% for s in SPECIALISATIONS %}<option {{ 'selected' if profile.specialisation == s }}>{{ s }}</option>{% endfor %}
+            </select></label>
+          <label>Years of experience <input type="number" name="years_experience" min="0" max="80" value="{{ profile.years_experience if profile.years_experience is not none else '' }}"></label>
+          <label>Qualifications <input name="qualifications" value="{{ profile.qualifications or '' }}" maxlength="255"></label>
+          <label>Languages spoken <input name="languages" value="{{ profile.languages or '' }}" maxlength="100"></label>
+          <label>Time zone
+            <input name="timezone" list="timezones" value="{{ profile.timezone }}">
+            <datalist id="timezones">{% for tz in TIMEZONES %}<option value="{{ tz }}">{% endfor %}</datalist>
+            <small>Your weekly availability is in this zone. Changing it moves your future open slots.</small></label>
+        </div>
+      </fieldset>
+      <fieldset>
+        <legend>Hospital or clinic</legend>
+        <div class="form grid-2">
+          <label>Name <input name="hospital_name" value="{{ profile.hospital.name if profile.hospital else '' }}" maxlength="200"></label>
+          <label>City <input name="hospital_city" value="{{ profile.hospital.city if profile.hospital else '' }}" maxlength="100"></label>
+          <label class="span-2">Address <input name="hospital_address" value="{{ profile.hospital.address if profile.hospital and profile.hospital.address else '' }}" maxlength="255"></label>
+        </div>
+      </fieldset>
+      <div class="form-foot"><button type="submit" class="button primary">Save profile</button></div>
     </form>
   </section>
 </div>
