@@ -3,8 +3,8 @@ name: MediSlot CloudFormation CI/CD Pipeline
 # One workflow for everything.
 #   Pull request into main: Lint.
 #   Push to main (or Run workflow): Lint, then one job per stack, each a
-#   CloudFormation change set: network, data, iam, config, auth, app, jobs and
-#   the web app.
+#   CloudFormation change set: network, data, iam, auth, app, jobs, the REST
+#   API and the web app. The web app comes last because it needs the API's URL.
 #
 # AWS access is the AWS_ROLE_ARN repository secret (GitHub OIDC). network,
 # data and iam are deployed with that role; every other stack through the
@@ -249,9 +249,32 @@ jobs:
           --param "Environment=${ENVIRONMENT}" --param "CodeS3Bucket=$ARTIFACT_BUCKET"
           --param "SlotMaterialiserCodeS3Key=$(jq -r '.functions["slot-materialiser"]' build/manifest.json)"
 
+  deploy-api:
+    name: Deploy REST API
+    needs: deploy-jobs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: pip install boto3==1.43.126 cfn-flip==1.3.0
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - run: bash scripts/ci/aws_context.sh
+      - name: Render the API template
+        run: python scripts/render_api_template.py
+      - name: API (REST API, JWT authorizer, routes)
+        run: >-
+          python scripts/cfn_deploy.py --stack "medislot-${ENVIRONMENT}-api"
+          --template build/templates/api-stack.yaml --bucket "$ARTIFACT_BUCKET" --role-arn "$EXECUTION_ROLE"
+          --param "Environment=${ENVIRONMENT}"
+
   deploy-web:
     name: Deploy Web App (EC2)
-    needs: deploy-jobs
+    needs: deploy-api
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
