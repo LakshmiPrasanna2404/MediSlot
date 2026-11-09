@@ -48,6 +48,57 @@ Parameters:
     AllowedValues: [7, 14, 30, 60, 90]
     Description: CloudWatch log retention period
 
+  # Business rules (frozen rule set). Each one reaches the functions that need it
+  # as a CONFIG_* environment variable; a value changes here, never in code.
+  BookingWindowDays:
+    Type: Number
+    Default: 30
+    MinValue: 1
+    MaxValue: 90
+    Description: Rolling window of materialised slots, in days. Keep equal to BookingWindowDays in the jobs stack.
+
+  MaxLookupDays:
+    Type: Number
+    Default: 31
+    MinValue: 1
+    MaxValue: 90
+    Description: Longest date range one slot lookup may ask for.
+
+  PhotoMaxUploadBytes:
+    Type: Number
+    Default: 5242880
+    MinValue: 1024
+    MaxValue: 10485760
+    Description: Largest profile photo a doctor may upload, in bytes (5 MB).
+
+  PhotoUploadUrlSeconds:
+    Type: Number
+    Default: 300
+    MinValue: 60
+    MaxValue: 3600
+    Description: Lifetime of the pre-signed photo upload form, in seconds.
+
+  PhotoViewUrlSeconds:
+    Type: Number
+    Default: 900
+    MinValue: 60
+    MaxValue: 86400
+    Description: Lifetime of a pre-signed photo view link, in seconds.
+
+  SearchDefaultPageSize:
+    Type: Number
+    Default: 20
+    MinValue: 1
+    MaxValue: 100
+    Description: Doctor search page size when the caller gives none.
+
+  SearchMaxPageSize:
+    Type: Number
+    Default: 50
+    MinValue: 1
+    MaxValue: 100
+    Description: Largest doctor search page size.
+
 Resources:
   DoctorProfileLogGroup:
     Type: AWS::Logs::LogGroup
@@ -88,6 +139,8 @@ Resources:
       Environment:
         Variables:
           ENVIRONMENT: !Ref Environment
+          CONFIG_SLOTS_BOOKING_WINDOW_DAYS: !Ref BookingWindowDays
+          CONFIG_PHOTOS_VIEW_URL_SECONDS: !Ref PhotoViewUrlSeconds
           DB_HOST: !ImportValue
             Fn::Sub: medislot-${Environment}-db-endpoint
           DB_PORT: !ImportValue
@@ -145,6 +198,8 @@ Resources:
       Environment:
         Variables:
           ENVIRONMENT: !Ref Environment
+          CONFIG_PHOTOS_MAX_UPLOAD_BYTES: !Ref PhotoMaxUploadBytes
+          CONFIG_PHOTOS_UPLOAD_URL_SECONDS: !Ref PhotoUploadUrlSeconds
           DB_HOST: !ImportValue
             Fn::Sub: medislot-${Environment}-db-endpoint
           DB_PORT: !ImportValue
@@ -253,6 +308,7 @@ Resources:
       Environment:
         Variables:
           ENVIRONMENT: !Ref Environment
+          CONFIG_SLOTS_BOOKING_WINDOW_DAYS: !Ref BookingWindowDays
           DB_HOST: !ImportValue
             Fn::Sub: medislot-${Environment}-db-endpoint
           DB_PORT: !ImportValue
@@ -418,6 +474,9 @@ Resources:
       Environment:
         Variables:
           ENVIRONMENT: !Ref Environment
+          CONFIG_PHOTOS_VIEW_URL_SECONDS: !Ref PhotoViewUrlSeconds
+          CONFIG_SEARCH_DEFAULT_PAGE_SIZE: !Ref SearchDefaultPageSize
+          CONFIG_SEARCH_MAX_PAGE_SIZE: !Ref SearchMaxPageSize
           DB_HOST: !ImportValue
             Fn::Sub: medislot-${Environment}-db-endpoint
           DB_PORT: !ImportValue
@@ -473,6 +532,7 @@ Resources:
       Environment:
         Variables:
           ENVIRONMENT: !Ref Environment
+          CONFIG_SLOTS_MAX_LOOKUP_DAYS: !Ref MaxLookupDays
           DB_HOST: !ImportValue
             Fn::Sub: medislot-${Environment}-db-endpoint
           DB_PORT: !ImportValue

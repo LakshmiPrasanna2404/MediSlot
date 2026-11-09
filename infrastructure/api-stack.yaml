@@ -962,16 +962,6 @@ Resources:
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${RestApi}/*
 
-  # The web app reads the API address from here, so the web stack does not
-  # depend on this stack's exports.
-  ApiBaseUrlParameter:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub /medislot/${Environment}/api/base-url
-      Type: String
-      Value: !Sub https://${RestApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}
-      Description: MediSlot REST API base URL (read by the web app)
-
 Outputs:
   ApiUrl:
     Description: Base URL of the MediSlot REST API

@@ -157,30 +157,9 @@ jobs:
           --template infrastructure/iam-stack.yaml --bucket "$ARTIFACT_BUCKET"
           --param "Environment=${ENVIRONMENT}"
 
-  deploy-config:
-    name: Deploy Config Stack
-    needs: deploy-iam
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v5
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.12'
-      - run: pip install boto3==1.43.126 cfn-flip==1.3.0
-      - uses: aws-actions/configure-aws-credentials@v6
-        with:
-          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-      - run: bash scripts/ci/aws_context.sh
-      - name: Config (business rules in SSM)
-        run: >-
-          python scripts/cfn_deploy.py --stack "medislot-${ENVIRONMENT}-config"
-          --template infrastructure/config-stack.yaml --bucket "$ARTIFACT_BUCKET" --role-arn "$EXECUTION_ROLE"
-          --param "Environment=${ENVIRONMENT}"
-
   deploy-auth:
     name: Deploy Auth and Authorizer Lambdas
-    needs: deploy-config
+    needs: deploy-iam
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -290,6 +269,15 @@ jobs:
           mkdir -p build
           curl -sSfL -o build/rds-ca-bundle.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
           python scripts/build_lambdas.py --env "$ENVIRONMENT" --ca-bundle build/rds-ca-bundle.pem --upload "$ARTIFACT_BUCKET"
+      - name: REST API address (from the API stack's output)
+        run: |
+          API_URL=$(aws cloudformation describe-stacks --stack-name "medislot-${ENVIRONMENT}-api" \
+            --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" --output text 2>/dev/null || true)
+          if [ -z "$API_URL" ] || [ "$API_URL" = "None" ]; then
+            echo "::error::Stack medislot-${ENVIRONMENT}-api has no ApiUrl output; the web app needs the API address."
+            exit 1
+          fi
+          echo "API_URL=$API_URL" >> "$GITHUB_ENV"
       - name: Web app
         run: >-
           python scripts/cfn_deploy.py --stack "medislot-${ENVIRONMENT}-dashboard"
@@ -297,3 +285,4 @@ jobs:
           --param "Environment=${ENVIRONMENT}"
           --param "DashboardCodeS3Bucket=$ARTIFACT_BUCKET"
           --param "DashboardCodeS3Key=$(jq -r '.dashboard' build/manifest.json)"
+          --param "ApiBaseUrl=$API_URL"

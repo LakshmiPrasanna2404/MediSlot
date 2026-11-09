@@ -44,9 +44,29 @@ Parameters:
       Auth Lambda memory in MB. bcrypt at work factor 12 is CPU-bound and Lambda
       CPU scales with memory, so this keeps login under a second.
 
+  BcryptRounds:
+    Type: Number
+    Default: 12
+    MinValue: 12
+    MaxValue: 15
+    Description: bcrypt work factor (12 or higher; the Auth Lambda refuses lower).
+
+  PasswordMinLength:
+    Type: Number
+    Default: 10
+    MinValue: 10
+    MaxValue: 72
+    Description: Minimum password length (the policy also needs one letter and one digit).
+
+  DefaultDoctorTimezone:
+    Type: String
+    Default: Asia/Kolkata
+    Description: IANA time zone given to a doctor who registers without one.
 Resources:
   # ---------------------------------------------------------------------------
-  # Authentication settings (frozen rule set). All SSM-configurable.
+  # JWT settings (frozen rule set), in SSM next to the signing secret. The
+  # password policy is in the Parameters above and reaches the Auth Lambda as
+  # environment variables.
   # ---------------------------------------------------------------------------
   AuthAccessTokenSeconds:
     Type: AWS::SSM::Parameter
@@ -66,28 +86,6 @@ Resources:
       Type: String
       Value: '604800'
       Description: Refresh token lifetime in seconds (7 days)
-      Tags:
-        Project: MediSlot
-        Environment: !Ref Environment
-
-  AuthBcryptRounds:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub /medislot/${Environment}/auth/bcrypt-rounds
-      Type: String
-      Value: '12'
-      Description: bcrypt work factor (12 or higher; the Auth Lambda refuses lower)
-      Tags:
-        Project: MediSlot
-        Environment: !Ref Environment
-
-  AuthPasswordMinLength:
-    Type: AWS::SSM::Parameter
-    Properties:
-      Name: !Sub /medislot/${Environment}/auth/password-min-length
-      Type: String
-      Value: '10'
-      Description: Minimum password length (policy also needs one letter and one digit)
       Tags:
         Project: MediSlot
         Environment: !Ref Environment
@@ -165,6 +163,9 @@ Resources:
           DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/db/username
           DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
           JWT_SECRET_PARAMETER: !Sub /medislot/${Environment}/auth/jwt-secret
+          CONFIG_AUTH_BCRYPT_ROUNDS: !Ref BcryptRounds
+          CONFIG_AUTH_PASSWORD_MIN_LENGTH: !Ref PasswordMinLength
+          CONFIG_DOCTORS_DEFAULT_TIMEZONE: !Ref DefaultDoctorTimezone
           REFRESH_TOKENS_TABLE: !ImportValue
             Fn::Sub: medislot-${Environment}-refresh-tokens-table-name
           TOKEN_REVOCATIONS_TABLE: !ImportValue

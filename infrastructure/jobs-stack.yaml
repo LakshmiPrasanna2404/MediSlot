@@ -29,6 +29,13 @@ Parameters:
     Default: cron(15 0 * * ? *)
     Description: When the daily materialiser runs (UTC). Each doctor's window is computed in their own time zone.
 
+  BookingWindowDays:
+    Type: Number
+    Default: 30
+    MinValue: 1
+    MaxValue: 90
+    Description: Rolling window of materialised slots, in days. Keep equal to BookingWindowDays in the app stack.
+
 Resources:
   SlotMaterialiserLogGroup:
     Type: AWS::Logs::LogGroup
@@ -69,6 +76,7 @@ Resources:
       Environment:
         Variables:
           ENVIRONMENT: !Ref Environment
+          CONFIG_SLOTS_BOOKING_WINDOW_DAYS: !Ref BookingWindowDays
           DB_HOST: !ImportValue
             Fn::Sub: medislot-${Environment}-db-endpoint
           DB_PORT: !ImportValue

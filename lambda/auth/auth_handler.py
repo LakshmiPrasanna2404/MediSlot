@@ -8,7 +8,7 @@ Routes (REST API, Lambda proxy):
     POST /auth/refresh             public (needs a valid refresh token)
     POST /auth/logout              protected by the Lambda authorizer
 
-* Passwords: bcrypt, work factor from SSM (12 or higher, enforced here too).
+* Passwords: bcrypt, work factor from the auth stack (12 or higher, enforced here too).
   Policy: at least 10 characters (SSM), one letter and one digit.
 * Access token: HS256 JWT, 15 minutes (SSM), exactly sub/role/iat/exp/jti.
 * Refresh token: opaque random string, 7 days (SSM), stored only as a
@@ -59,8 +59,8 @@ def settings():
     values = {
         "access_seconds": int(_auth_param("access-token-seconds")),
         "refresh_seconds": int(_auth_param("refresh-token-seconds")),
-        "bcrypt_rounds": int(_auth_param("bcrypt-rounds")),
-        "password_min_length": int(_auth_param("password-min-length")),
+        "bcrypt_rounds": config.config_int("auth/bcrypt-rounds"),
+        "password_min_length": config.config_int("auth/password-min-length"),
         "issuer": _auth_param("jwt-issuer"),
     }
     if values["bcrypt_rounds"] < MIN_BCRYPT_ROUNDS:

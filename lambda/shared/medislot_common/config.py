@@ -1,8 +1,13 @@
-"""AWS clients and SSM Parameter Store access.
+"""AWS clients, settings and SSM Parameter Store access.
 
-Every threshold, window and percentage lives in SSM under
-/medislot/{env}/config/. Values are read once per Lambda container
-(cold start) and cached for the life of that container.
+SSM holds only the database credentials and the JWT values (secret, issuer,
+token lifetimes). They are read once per Lambda container (cold start) and
+cached for the life of that container.
+
+Every other rule (slot window, lookup range, photo limits, page sizes, default
+doctor time zone, password policy) is a CloudFormation stack parameter, passed
+to each function as a CONFIG_* environment variable. Nothing is a constant in
+the code: a value changes by changing the stack parameter.
 """
 
 import os
@@ -19,7 +24,6 @@ BOTO_CONFIG = Config(
 _clients = {}
 _resources = {}
 _parameters = {}
-_config = None
 
 
 def environment():
@@ -55,32 +59,21 @@ def get_parameter(name, decrypt=False):
     return _parameters[name]
 
 
-def config_prefix():
-    return f"/medislot/{environment()}/config/"
+def setting_name(key):
+    """Environment variable that holds a setting.
 
-
-def get_config():
-    """All business rules under /medislot/{env}/config/, keyed by relative name.
-
-    Example key: "refund/full-refund-min-hours".
+    "slots/booking-window-days" -> "CONFIG_SLOTS_BOOKING_WINDOW_DAYS".
     """
-    global _config
-    if _config is None:
-        prefix = config_prefix()
-        values = {}
-        paginator = client("ssm").get_paginator("get_parameters_by_path")
-        for page in paginator.paginate(Path=prefix, Recursive=True, WithDecryption=False):
-            for parameter in page["Parameters"]:
-                values[parameter["Name"][len(prefix):]] = parameter["Value"]
-        _config = values
-    return _config
+    return "CONFIG_" + key.upper().replace("/", "_").replace("-", "_")
 
 
 def config_value(key):
-    values = get_config()
-    if key not in values:
-        raise RuntimeError(f"Missing SSM parameter {config_prefix()}{key}")
-    return values[key]
+    """A business rule, from the environment variable its CloudFormation stack sets."""
+    name = setting_name(key)
+    value = os.environ.get(name, "")
+    if value == "":
+        raise RuntimeError(f"Missing setting {name} ({key})")
+    return value
 
 
 def config_int(key):
@@ -89,8 +82,6 @@ def config_int(key):
 
 def reset_caches():
     """Used by tests between cases."""
-    global _config
     _clients.clear()
     _resources.clear()
     _parameters.clear()
-    _config = None

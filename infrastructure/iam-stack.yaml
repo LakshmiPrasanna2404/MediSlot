@@ -48,15 +48,6 @@ Resources:
               - ec2:AssignPrivateIpAddresses
               - ec2:UnassignPrivateIpAddresses
             Resource: '*'
-          - Sid: ReadBusinessRules
-            Effect: Allow
-            Action:
-              - ssm:GetParametersByPath
-              - ssm:GetParameter
-              - ssm:GetParameters
-            Resource:
-              - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/config
-              - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/config/*
 
   DatabaseAccessPolicy:
     Type: AWS::IAM::ManagedPolicy
@@ -1004,14 +995,6 @@ Resources:
           PolicyDocument:
             Version: '2012-10-17'
             Statement:
-              - Sid: ReadWebSettings
-                Effect: Allow
-                Action:
-                  - ssm:GetParameter
-                  - ssm:GetParameters
-                Resource:
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/dashboard/*
-                  - !Sub arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:parameter/medislot/${Environment}/api/*
               - Sid: ReadWebPackage
                 Effect: Allow
                 Action:

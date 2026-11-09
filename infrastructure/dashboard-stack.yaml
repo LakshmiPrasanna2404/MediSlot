@@ -34,6 +34,13 @@ Parameters:
       default because AWS Free plan accounts cannot launch t2.micro, and it is
       the type the existing instance already runs on.
 
+  ApiBaseUrl:
+    Type: String
+    AllowedPattern: '^https://.+'
+    Description: >-
+      REST API base URL (the ApiUrl output of the medislot-<env>-api stack). The
+      pipeline reads it from that stack and passes it in.
+
   LatestAmiId:
     Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
     Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
@@ -101,13 +108,22 @@ Resources:
           id medislot >/dev/null 2>&1 || useradd --system --home-dir /opt/medislot --shell /sbin/nologin medislot
           install -d -o medislot -g medislot /opt/medislot /var/lib/medislot /var/lib/medislot/sessions
 
-          # Names only. The session key and the API address are read from SSM.
+          # Session signing key: random, generated on the first boot and kept on
+          # the instance's disk, readable only by the app. Never in SSM or in git.
+          install -d -m 0750 -o root -g medislot /etc/medislot
+          if [ ! -s /etc/medislot/session-secret ]; then
+            (umask 077; python3 -c 'import secrets; print(secrets.token_hex(32))' > /etc/medislot/session-secret)
+          fi
+          chown medislot:medislot /etc/medislot/session-secret
+          chmod 600 /etc/medislot/session-secret
+
+          # No secrets here: the API address and the path of the key file.
           cat > /etc/medislot-web.env <<'ENVEOF'
           ENVIRONMENT=${Environment}
           AWS_REGION=${AWS::Region}
           AWS_DEFAULT_REGION=${AWS::Region}
-          MEDISLOT_API_BASE_URL_PARAMETER=/medislot/${Environment}/api/base-url
-          MEDISLOT_SESSION_SECRET_PARAMETER=/medislot/${Environment}/dashboard/session-secret
+          MEDISLOT_API_BASE_URL=${ApiBaseUrl}
+          MEDISLOT_SESSION_SECRET_FILE=/etc/medislot/session-secret
           MEDISLOT_SESSION_DIR=/var/lib/medislot/sessions
           ENVEOF
           chmod 644 /etc/medislot-web.env

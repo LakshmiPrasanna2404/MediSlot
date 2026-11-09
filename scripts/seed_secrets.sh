@@ -37,6 +37,3 @@ put "${PREFIX}/auth/jwt-secret" SecureString "$(openssl rand -base64 48 | tr -d 
 # RDS master credentials (read by CloudFormation when the database is created).
 put "${PREFIX}/db/username" String "medislot_admin"
 put "${PREFIX}/db/password" SecureString "$(openssl rand -base64 36 | tr -dc 'A-Za-z0-9' | head -c 32)"
-
-# Flask session signing key for the web app.
-put "${PREFIX}/dashboard/session-secret" SecureString "$(openssl rand -hex 32)"
