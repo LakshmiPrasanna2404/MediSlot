@@ -20,8 +20,8 @@ never in an environment variable, and can be rotated without a code change (ever
 
 ## Flows
 
-- **Register** (`POST /auth/{doctors|patients}/register`): password policy (at least 10 characters from SSM, one
-  letter, one digit, at most 72 bytes because bcrypt ignores anything longer), bcrypt with the SSM work factor
+- **Register** (`POST /auth/{doctors|patients}/register`): password policy (at least 10 characters from the auth stack, one
+  letter, one digit, at most 72 bytes because bcrypt ignores anything longer), bcrypt with the auth stack's work factor
   (12; the Lambda refuses anything lower), then one transaction inserts the users row and the doctors or patients
   row. Email is unique across both roles (409). A doctor registers with a licence number (unique, 409).
 - **Login** (`POST /auth/{role}s/login`): looks the user up by email and portal role and checks bcrypt. A wrong

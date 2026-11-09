@@ -51,7 +51,7 @@ erDiagram
 
 **One addition to the diagram: `doctors.timezone`.** The frozen rules require each doctor's home time zone as an
 IANA identifier, and the slots table stores the zone with every slot, so the value has to be stored somewhere.
-It defaults to the SSM value `config/doctors/default-timezone` (Asia/Kolkata).
+It defaults to the auth stack parameter `DefaultDoctorTimezone` (Asia/Kolkata).
 
 ### Indexes and the queries they serve
 
@@ -95,7 +95,7 @@ No combination does a full table scan. Name and hospital filters match the **sta
 index can serve them. A word-anywhere search ("Sharma" inside "Anil Sharma") would need a FULLTEXT index; that is a
 possible next step if search measurements show it is needed.
 
-Pagination: `page` and `page_size` (default and maximum in SSM). The query fetches one extra row to answer
+Pagination: `page` and `page_size` (default and maximum are app stack parameters). The query fetches one extra row to answer
 `has_more` without a COUNT.
 
 ## DynamoDB
@@ -108,7 +108,7 @@ Pagination: `page` and `page_size` (default and maximum in SSM). The query fetch
 | seats | PK slotId, SK patientId | | | Booking: conditional put, so a patient holds at most one seat per slot. Cancel: delete. |
 | waitlist | PK slotId, SK patientId | LSI_QueueOrder (slotId + queueOrder); GSI_Patient_Waitlists (patientId + createdAt) | | Join: conditional put (no duplicate per slot), queueOrder from an atomic counter on the slot item. Next in line: query the LSI. "My waitlists": query the GSI. |
 | hold-offers | PK offerId | GSI_Patient_Offers (patientId + createdAt); GSI_Slot_Offers (slotId + createdAt) | ttl (cleanup only; expiresAt drives the logic) | Live offer for a slot, offers for a patient, conditional status changes LIVE → ACCEPTED / EXPIRED. |
-| idempotency | PK `patientId#key` = `<patientId>#<Idempotency-Key>` | | expiresAt (24 h, SSM) | Booking: conditional put IN_PROGRESS, then the stored response on replay. Scoped per patient, so keys from two patients never collide. |
+| idempotency | PK `patientId#key` = `<patientId>#<Idempotency-Key>` | | expiresAt (24 h, a setting) | Booking: conditional put IN_PROGRESS, then the stored response on replay. Scoped per patient, so keys from two patients never collide. |
 | dispatch-log | PK dispatchKey | | | Notification and reminder: conditional put before sending, so each notification goes out once. |
 
 Slot item attributes (as on the diagram): slotId, doctorId, consultationTypeId, startTime, endTime (UTC ISO 8601),

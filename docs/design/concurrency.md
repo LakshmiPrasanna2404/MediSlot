@@ -29,7 +29,7 @@ Camp Session.
 
 ## Idempotency
 
-Table `idempotency`, key `patientId#key` = `<patientId>#<Idempotency-Key header>`, TTL 24 hours (SSM).
+Table `idempotency`, key `patientId#key` = `<patientId>#<Idempotency-Key header>`, TTL 24 hours (a setting).
 
 - The first request puts `{status: IN_PROGRESS, requestHash}` with `attribute_not_exists`.
 - On success the stored record becomes `COMPLETED` with the response. A replay with the same hash returns the stored
@@ -61,7 +61,7 @@ When `SlotSeatFreed` arrives, the Waitlist Processor runs **one transaction**:
 
 - Slot: `heldCount + 1, version + 1` with the condition `version = :v AND bookedCount + heldCount < capacity`.
 - Waitlist entry (the first by `LSI_QueueOrder`): status `WAITING` → `OFFERED`, conditional on WAITING.
-- Hold offer: put `{status: LIVE, expiresAt: now + 15 min (SSM)}`.
+- Hold offer: put `{status: LIVE, expiresAt: now + 15 min (a setting)}`.
 
 If any condition fails the whole transaction fails, so one freed seat becomes exactly one live offer. While the seat
 is held, `heldCount` counts against capacity, so normal booking cannot take it. The offer expires through its

@@ -33,7 +33,7 @@ A reschedule moves the appointment. It carries no refund and no fee.
 
 ## Testing the compensation (Mandatory Test 3)
 
-The SSM flag `config/test/fail-release` makes step 4 fail on purpose. The test sets it, reschedules, and checks that
+A test setting (`CONFIG_TEST_FAIL_RELEASE`, added in Milestone 6) makes step 4 fail on purpose. The test sets it, reschedules, and checks that
 the patient still holds exactly one CONFIRMED appointment (the original), that the new seat is free again, and that
 `ReschedulesCompensated` went up (an alarm fires on any compensation). The execution history in Step Functions shows
 the compensation branch.

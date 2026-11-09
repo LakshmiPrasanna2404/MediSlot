@@ -14,7 +14,7 @@
 Code: `lambda/shared/medislot_common/slots.py`. Run by the daily materialiser and straight after a doctor edits
 availability, blackouts or their time zone.
 
-1. The window is the doctor's local today plus the next 29 days (30 days, `config/slots/booking-window-days`).
+1. The window is the doctor's local today plus the next 29 days (30 days, the `BookingWindowDays` stack parameter).
 2. Blackout dates are skipped.
 3. For each pattern on that weekday, step through the **local wall clock** from the pattern start in steps of the
    consultation duration. A slot is kept only if it ends by the pattern end (09:00–10:40 with 30 minutes gives

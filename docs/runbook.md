@@ -22,9 +22,9 @@ There is one workflow, `.github/workflows/deploy.yaml` (**MediSlot CloudFormatio
 
 - **The artifacts bucket** `medislot-<env>-<account>-<region>-artifacts`, which holds the Lambda zips, the web app
   package and the templates (`scripts/ci/ensure_artifact_bucket.sh`).
-- **The SecureStrings in SSM** (`scripts/seed_secrets.sh`): the JWT signing key, the database username and password,
-  and the web app session key. Random values are created only if missing, are never printed and are never
-  overwritten.
+- **The values in SSM** (`scripts/seed_secrets.sh`): the JWT signing key and the database username and password.
+  Random values are created only if missing, are never printed and are never overwritten. The web app's session key
+  is generated on the instance itself at first boot.
 - **The CloudFormation execution role** `medislot-<env>-cloudformation-execution-role`, in the iam stack. network,
   data and iam are deployed with the pipeline's own role. Every other stack goes through this role.
 
@@ -93,8 +93,8 @@ The first run updates the stacks your earlier pipeline created, in place, as fol
 
 **API and app stacks:**
 
-- **Replaces the HTTP API with the REST API.** The API URL changes. The web app reads the new URL from SSM; anything
-  else that saved the old URL must be updated.
+- **Replaces the HTTP API with the REST API.** The API URL changes. The pipeline passes the new URL to the web app stack;
+  anything else that saved the old URL must be updated.
 - **Removes the single app Lambda and its routes,** and deploys the per-function Lambdas.
 
 **Web app stack:**
@@ -138,7 +138,7 @@ Each guarded step checks the current state first, so a step that has already bee
 | Follow one request | Take `X-Correlation-Id` from the response or the web app's error page, then search it in CloudWatch Logs Insights across the `/aws/lambda/medislot-dev-*` groups: `fields @timestamp, level, message, @log \| filter correlationId = "<id>" \| sort @timestamp` |
 | Find slow requests | API Gateway access logs (`/aws/apigateway/medislot-dev-api-access`) record `latencyMs` and `integrationLatencyMs` per `requestId`. The Lambda log lines for that request carry the same value as `apiRequestId`, next to the `correlationId`, and the Lambda `REPORT` line gives the duration. |
 | Rotate the JWT secret | `aws ssm put-parameter --name /medislot/dev/auth/jwt-secret --type SecureString --value "$(openssl rand -base64 48)" --overwrite`. Lambdas pick it up on their next cold start; to force it, deploy any change to the auth stack. Every user has to sign in again. |
-| Change a business rule (refund tiers, windows, limits) | Edit `infrastructure/config-stack.yaml` in a PR. Lambdas cache config for the life of a container, at most a few minutes under steady traffic. |
+| Change a business rule (slot window, limits, page sizes, password policy) | Change the parameter default in the stack that uses it (`app-stack.yaml`, `jobs-stack.yaml` or `auth-stack.yaml`) in a PR. The deploy updates each function's `CONFIG_*` environment variables, and new containers use the new value. |
 | Web app logs | EC2 → instance → Connect (Session Manager), then `journalctl -u medislot-web -n 200` |
 
 ## 5. Recovery

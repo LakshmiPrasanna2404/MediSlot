@@ -23,12 +23,12 @@ CloudFormation stack in the tables that follow. The schema diagrams are covered 
 | 6 | RDS MySQL | `database/migrations/` (applied by `lambda/db_migrate/`) | `data-stack.yaml` | Deployed |
 | 6 | DynamoDB: token revocation, refresh tokens, slots, seats, waitlist, hold offers, idempotency, dispatch log | `lambda/shared/medislot_common/` | `data-stack.yaml` | All 8 tables deployed; used from Milestones 2–3 onwards |
 | 6 | S3 profile photos (pre-signed POST to upload, pre-signed GET to view) | `lambda/photo_upload/` | `data-stack.yaml` | Deployed |
-| 6 | SSM Parameter Store: DB credentials, JWT secret and issuer, token settings, refund tiers and every other threshold | `scripts/seed_secrets.sh` for SecureStrings | `config-stack.yaml`, `auth-stack.yaml` | Deployed |
+| 6 | SSM Parameter Store: DB credentials, JWT secret, issuer and token lifetimes only. Other rules are stack parameters passed to each function as environment variables | `scripts/seed_secrets.sh` for SecureStrings | `auth-stack.yaml`; rules in `app-stack.yaml`, `jobs-stack.yaml`, `auth-stack.yaml` | Deployed |
 | 7 | EventBridge Scheduler: Slot Materialiser, daily | `lambda/slot_materialiser/` | `jobs-stack.yaml` | Deployed |
 | 7 | Offer Expiry, Reminder, No-show jobs | — | — | Milestones 5–6 |
 | 8 | EventBridge bus, Waitlist Processor, Notification Lambda, SNS | — | — | Milestones 5–6 ([events.md](design/events.md)) |
 | 9 | Step Functions: slot cancel (doctor), reschedule saga (patient) | — | — | Milestones 5–6 ([reschedule-saga.md](design/reschedule-saga.md)) |
-| 10 | CloudWatch logs and metrics, alarms to SNS for the admin team | `medislot_common/logs.py` (JSON logs, EMF metrics) | `monitoring-stack.yaml` | Deployed (API 5xx, Lambda errors, RDS CPU, slot write conflicts); more in Milestone 7 |
+| 10 | CloudWatch logs and metrics, alarms to SNS for the admin team | `medislot_common/logs.py` (JSON logs, EMF metrics) | — | Logs and metrics deployed; alarms and dashboards in Milestone 7 |
 | 11 | VPC 10.0.0.0/16, public subnet for EC2, private subnets for Lambda and RDS, VPC endpoints, no NAT gateway | — | `network-stack.yaml` | Deployed |
 
 ## Request path
@@ -81,15 +81,13 @@ Browser ──HTTP :80──▶ EC2 Flask (server-side session holds the tokens)
 | 1 | `medislot-<env>-network` | VPC, subnets, route tables, security groups, VPC endpoints | pipeline role |
 | 2 | `medislot-<env>-data` | RDS, 8 DynamoDB tables, photo bucket | pipeline role |
 | 3 | `medislot-<env>-iam` | Per-function roles, scheduler role, web app instance profile, CloudFormation execution role | pipeline role |
-| 4 | `medislot-<env>-config` | Non-secret SSM parameters under `/medislot/<env>/config/` | execution role |
-| 5 | `medislot-<env>-auth` | Auth and Authorizer Lambdas, auth SSM parameters | execution role |
-| 6 | `medislot-<env>-app` | Doctor and patient domain Lambdas, migration Lambda | execution role |
-| 7 | `medislot-<env>-jobs` | Slot materialiser and its daily schedule | execution role |
-| 8 | `medislot-<env>-monitoring` | Alarms and the alarm SNS topic | execution role |
-| 9 | `medislot-<env>-dashboard` | EC2 web application and its Elastic IP | execution role |
-| 10 | `medislot-<env>-api` | REST API, routes, models, gateway responses, stage, base URL in SSM | execution role |
+| 4 | `medislot-<env>-auth` | Auth and Authorizer Lambdas, JWT settings in SSM | execution role |
+| 5 | `medislot-<env>-app` | Doctor and patient domain Lambdas, migration Lambda | execution role |
+| 6 | `medislot-<env>-jobs` | Slot materialiser and its daily schedule | execution role |
+| 7 | `medislot-<env>-dashboard` | EC2 web application and its Elastic IP | execution role |
+| 8 | `medislot-<env>-api` | REST API, routes, models, gateway responses, stage | execution role |
 
 All of it is deployed by one workflow, `.github/workflows/deploy.yaml`, one job per stack, each update through a
 change set (`scripts/cfn_deploy.py`). The artifacts bucket and the SSM SecureStrings are created by the same
-workflow when they are missing. The API stack is last so every Lambda it points to exists. The web app reads the
-API URL from SSM at run time, so it does not need the API stack first.
+workflow when they are missing. The API stack is last so every Lambda it points to exists. The web app gets the
+API URL from the API stack's `ApiUrl` output, which the pipeline passes to the dashboard stack.

@@ -1,7 +1,7 @@
 # API reference
 
 One REST API in API Gateway: `medislot-<env>-api`, stage `<env>`. The base URL is the `ApiUrl` output of the
-`medislot-<env>-api` stack, also stored in SSM at `/medislot/<env>/api/base-url`. The source of truth is the
+`medislot-<env>-api` stack; the pipeline passes it to the web app stack. The source of truth is the
 OpenAPI body in `infrastructure/api-stack.yaml`.
 
 ## Conventions

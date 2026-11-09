@@ -39,7 +39,7 @@ The unit tests cover:
 ```
 Lint, Security scans, Unit tests
   ▶ Prepare and Package
-  ▶ Deploy Network Stack ▶ Deploy Data Stack ▶ Deploy IAM Stack ▶ Deploy Config Stack
+  ▶ Deploy Network Stack ▶ Deploy Data Stack ▶ Deploy IAM Stack
   ▶ Deploy Auth and Authorizer Lambdas ▶ Deploy Doctor and Patient Lambdas ▶ Deploy Scheduled Jobs
   ▶ Deploy Monitoring and Alarms ▶ Deploy Web App (EC2) ▶ Deploy REST API
   ▶ Database Migrations ▶ Integration Tests ▶ Smoke Test
@@ -100,9 +100,12 @@ that must be undone is followed by a new one.
 | GitHub repository secret | `AWS_ROLE_ARN` | ARN of the GitHub OIDC role | Not a credential: GitHub gets short-lived credentials for it through OIDC |
 | GitHub repository variable | `AWS_REGION` | e.g. `us-east-1` | |
 | GitHub repository variable | `ALARM_EMAIL` (optional) | Email for the alarm SNS topic | Confirm the subscription email once |
-| SSM SecureString | `/medislot/<env>/auth/jwt-secret`, `/db/password`, `/dashboard/session-secret` | Created by `scripts/seed_secrets.sh` (run by the pipeline) when missing | Never in GitHub, the repo, the logs or an environment variable |
-| SSM String | `/medislot/<env>/db/username`, `/medislot/<env>/config/*`, `/medislot/<env>/auth/*` | Settings | Config and auth parameters come from stacks |
+| SSM SecureString | `/medislot/<env>/auth/jwt-secret`, `/db/password` | Created by `scripts/seed_secrets.sh` (run by the pipeline) when missing | Never in GitHub, the repo, the logs or an environment variable |
+| SSM String | `/medislot/<env>/db/username`; `/medislot/<env>/auth/jwt-issuer`, `access-token-seconds`, `refresh-token-seconds` | JWT settings | From the auth stack |
+| Stack parameters | Slot window and lookup range, photo limits, page sizes, default doctor time zone, bcrypt work factor, password length | Business rules | Defaults in `app-stack.yaml`, `jobs-stack.yaml`, `auth-stack.yaml`; each function gets the ones it uses as `CONFIG_*` environment variables |
+| On the web server | `/etc/medislot/session-secret` | Web session signing key | Generated on the instance at first boot, readable only by the app |
 
 - **No long-lived AWS keys anywhere.**
-- **Lambdas read secrets from SSM at cold start,** with their own role scoped to the parameter paths they need.
+- **SSM holds only the database credentials and the JWT values.** Lambdas read them at cold start, with their own
+  role scoped to the parameter paths they need.
 - **gitleaks blocks a pull request that adds a secret,** and `.gitignore` excludes `.env`, `build/` and local state.

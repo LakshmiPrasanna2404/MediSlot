@@ -62,4 +62,4 @@ Every job is safe to run twice.
 | Slot materialiser (**Milestone 3, deployed**) | Daily, `cron(15 0 * * ? *)` UTC; each doctor's window is computed in their own time zone | Conditional put per deterministic slotId |
 | Offer expiry | One-time schedule at the offer's expiresAt, plus a sweeper every minute as a backstop | Conditional LIVE → EXPIRED |
 | Reminders (24 h and 2 h) | One-time schedules per appointment, plus a sweeper every 5 minutes | dispatch-log conditional put; appointment still CONFIRMED and its time unchanged |
-| No-show | One-time schedule at slot end + 30 min (SSM), plus a sweeper every 15 minutes | Conditional CONFIRMED → NO_SHOW |
+| No-show | One-time schedule at slot end + 30 min (a setting), plus a sweeper every 15 minutes | Conditional CONFIRMED → NO_SHOW |
