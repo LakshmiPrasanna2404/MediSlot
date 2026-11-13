@@ -1,0 +1,81 @@
+{% extends "base.html" %}
+{% block title %}Consultation types · MediSlot{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Consultation types</h1>
+    <p>What patients can see and book with you. The type sets how long each slot is; you set the fee.</p>
+  </div>
+</div>
+
+<section class="card">
+  <h2>Add a consultation type</h2>
+  <form method="post" class="form grid-4">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <label>Type
+      <select name="name" required>
+        {% for name, minutes in CONSULTATION_TYPES.items() %}<option value="{{ name }}">{{ name }} ({{ minutes }} min)</option>{% endfor %}
+      </select></label>
+    <label>Fee
+      <span class="money-input"><span>₹</span><input type="number" name="fee" min="0" step="0.01" required aria-label="Fee in rupees"></span></label>
+    <label>Seats per slot <input type="number" name="capacity" min="1" max="10" placeholder="1"></label>
+    <label>Description <input name="description" maxlength="255" placeholder="Shown to patients"></label>
+    <p class="hint span-all form-hint">Seats: 2 to 10 for a Health Camp Session, otherwise 1.</p>
+    <div class="span-all"><button type="submit" class="button primary">{{ icon('plus', 16) }}Add type</button></div>
+  </form>
+</section>
+
+{% set active = types|selectattr('is_active')|list %}
+{% set removed = types|rejectattr('is_active')|list %}
+<section class="card">
+  <h2>Your consultation types</h2>
+  {% if active %}
+    <ul class="plain-list">
+    {% for t in active %}
+      <li class="type-item">
+        <span class="item-main">
+          <span class="item-title">{{ t.name }}</span>
+          <span class="item-meta">
+            <span>{{ icon('clock', 14) }}{{ t.duration_minutes }} min</span>
+            <span>{{ icon('users' if t.capacity > 1 else 'user', 14) }}{{ t.capacity }} seat{{ 's' if t.capacity != 1 }}</span>
+          </span>
+        </span>
+        <form method="post" action="{{ url_for('doctor.update_consultation_type', type_id=t.consultation_type_id) }}" class="type-edit">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <label>Fee <span class="money-input"><span>₹</span><input type="number" name="fee" value="{{ t.fee }}" min="0" step="0.01"></span></label>
+          {% if t.name == 'Health Camp Session' %}<label>Seats <input type="number" name="capacity" value="{{ t.capacity }}" min="2" max="10" class="seats-input"></label>{% endif %}
+          <label class="grow">Description <input name="description" value="{{ t.description or '' }}" maxlength="255"></label>
+          <button type="submit" class="button small">{{ icon('check', 15) }}Save</button>
+        </form>
+        <form method="post" action="{{ url_for('doctor.delete_consultation_type', type_id=t.consultation_type_id) }}">
+          <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+          <button type="submit" class="link-button danger">{{ icon('trash', 16) }}Remove</button>
+        </form>
+      </li>
+    {% endfor %}
+    </ul>
+  {% else %}
+    <div class="empty">
+      {{ icon('clipboard', 24) }}
+      <p><strong>No consultation types yet.</strong> Add one above, then set your weekly availability.</p>
+    </div>
+  {% endif %}
+
+  {% if removed %}
+    <details class="removed">
+      <summary>Removed types ({{ removed|length }})</summary>
+      <ul class="plain-list">
+      {% for t in removed %}
+        <li>
+          <span class="item-main">
+            <span class="item-title">{{ t.name }}</span>
+            <span class="item-meta"><span>{{ t.duration_minutes }} min</span><span>{{ t.capacity }} seat{{ 's' if t.capacity != 1 }}</span><span>{{ t.fee|money }}</span></span>
+          </span>
+          <span class="chip">Removed</span>
+        </li>
+      {% endfor %}
+      </ul>
+    </details>
+  {% endif %}
+</section>
+{% endblock %}

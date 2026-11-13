@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block body_class %}landing{% endblock %}
+{% block content %}
+<section class="hero">
+  <div class="hero-copy">
+    <h1>Find a doctor and an open slot in minutes.</h1>
+    <p class="lead">Search doctors by name, specialisation, hospital or city and see their open slots. Doctors set their availability and see their day in one place.</p>
+    {% if session_role %}
+      <a class="button primary large" href="{{ url_for('doctor.schedule' if session_role == 'doctor' else 'patient.search') }}">Continue to your dashboard</a>
+    {% else %}
+      <div class="choices">
+        <a class="choice" href="{{ url_for('auth.patient_login') }}">
+          <span class="choice-icon">{{ icon('search', 22) }}</span>
+          <span class="choice-body">
+            <span class="choice-title">Login as Patient</span>
+            <span class="choice-text">Find doctors, browse open slots and manage your profile.</span>
+          </span>
+          {{ icon('chevron-right', 20, 'choice-arrow') }}
+        </a>
+        <a class="choice" href="{{ url_for('auth.doctor_login') }}">
+          <span class="choice-icon">{{ icon('stethoscope', 22) }}</span>
+          <span class="choice-body">
+            <span class="choice-title">Login as Doctor</span>
+            <span class="choice-text">Set weekly availability and consultation types, and see your day.</span>
+          </span>
+          {{ icon('chevron-right', 20, 'choice-arrow') }}
+        </a>
+      </div>
+      <p class="register-links muted">New to MediSlot? <a href="{{ url_for('auth.patient_register') }}">Create a patient account</a> or <a href="{{ url_for('auth.doctor_register') }}">register as a doctor</a>.</p>
+    {% endif %}
+  </div>
+
+  <div class="board" aria-hidden="true">
+    <div class="board-head">
+      <span class="board-day">Tuesday morning</span>
+      <span class="board-legend"><span><i></i>Open</span><span><i class="full"></i>Full</span></span>
+    </div>
+    <div class="board-grid">
+      {% for time, state, label in [
+        ('09:00', 'full', 'Full'), ('09:15', 'open', 'Open'), ('09:30', 'open', 'Open'),
+        ('09:45', 'full', 'Full'), ('10:00', 'open', 'Open'), ('10:30', 'full', 'Full'),
+        ('11:00', 'open', 'Open'), ('11:30', 'open', 'Open'), ('12:00', 'open', '4 of 6 free'),
+      ] %}
+        <span class="board-slot {{ state }}" style="--i: {{ loop.index0 }}"><span class="board-time">{{ time }}</span><span class="board-state">{{ label }}</span></span>
+      {% endfor %}
+    </div>
+    <p class="board-foot">Open slots come from each doctor's weekly hours and are shown in their time zone.</p>
+  </div>
+</section>
+{% endblock %}

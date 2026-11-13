@@ -1,0 +1,52 @@
+{% extends "base.html" %}
+{% block title %}Availability · MediSlot{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Weekly availability</h1>
+    <p>Your recurring weekly hours, in your time zone ({{ data.timezone }}).</p>
+  </div>
+</div>
+
+{% if not types %}
+  <section class="card">
+    <div class="empty">
+      {{ icon('clipboard', 24) }}
+      <p><strong>Add a consultation type first.</strong> Each block of hours needs a type, so MediSlot knows how long each slot is.</p>
+      <a class="button primary" href="{{ url_for('doctor.consultation_types') }}">Add a consultation type</a>
+    </div>
+  </section>
+{% else %}
+<div class="note">{{ icon('info') }}<span>Slots for the next 30 days are created from these hours as soon as you save, and the window moves forward every day. Saving replaces the whole list, and blank rows are ignored.</span></div>
+<section class="card">
+  <form method="post" class="form" id="availability-form">
+    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+    <table class="table stack form-table" id="pattern-table">
+      <thead><tr><th>Day</th><th>From</th><th>To</th><th>Consultation type</th><th><span class="sr-only">Remove</span></th></tr></thead>
+      <tbody>
+      {% set rows = data.patterns + [{}] %}
+      {% for p in rows %}
+        <tr class="pattern-row">
+          <td data-label="Day"><select name="day_of_week" aria-label="Day">
+            <option value="">Choose a day</option>
+            {% for num, name in DAYS.items() %}<option value="{{ num }}" {{ 'selected' if p.day_of_week == num }}>{{ name }}</option>{% endfor %}
+          </select></td>
+          <td data-label="From"><input type="time" name="start_time" value="{{ p.start_time or '' }}" step="300" aria-label="From"></td>
+          <td data-label="To"><input type="time" name="end_time" value="{{ p.end_time or '' }}" step="300" aria-label="To"></td>
+          <td data-label="Type"><select name="consultation_type_id" aria-label="Consultation type">
+            {% for t in types %}<option value="{{ t.consultation_type_id }}" {{ 'selected' if p.consultation_type_id == t.consultation_type_id }}>{{ t.name }} ({{ t.duration_minutes }} min)</option>{% endfor %}
+          </select></td>
+          <td class="actions-cell"><button type="button" class="link-button danger remove-row">{{ icon('trash', 16) }}Remove</button></td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    <div class="actions">
+      <button type="button" class="button" id="add-row">{{ icon('plus', 16) }}Add a row</button>
+      <button type="submit" class="button primary">Save availability</button>
+    </div>
+  </form>
+</section>
+{% endif %}
+{% endblock %}
+{% block scripts %}<script src="{{ url_for('static', filename='availability.js') }}"></script>{% endblock %}
