@@ -201,47 +201,6 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # LEGACY, kept for one deployment only. The old slots table (key slotId plus
-  # GSI_Doctor_Slots) is replaced by DoctorSlotsTable above. It stays in the
-  # template until the app and jobs stacks stop importing its exports; the
-  # follow-up change removes it (see docs/runbook.md, "Slots table cut-over").
-  # Nothing reads or writes it any more.
-  SlotsTable:
-    Type: AWS::DynamoDB::Table
-    DeletionPolicy: Retain
-    UpdateReplacePolicy: Retain
-    Properties:
-      TableName: !Sub 'medislot-${Environment}-slots'
-      BillingMode: PAY_PER_REQUEST
-      AttributeDefinitions:
-        - AttributeName: slotId
-          AttributeType: S
-        - AttributeName: doctorId
-          AttributeType: S
-        - AttributeName: startTime
-          AttributeType: S
-      KeySchema:
-        - AttributeName: slotId
-          KeyType: HASH
-      GlobalSecondaryIndexes:
-        - IndexName: GSI_Doctor_Slots
-          KeySchema:
-            - AttributeName: doctorId
-              KeyType: HASH
-            - AttributeName: startTime
-              KeyType: RANGE
-          Projection:
-            ProjectionType: ALL
-      PointInTimeRecoverySpecification:
-        PointInTimeRecoveryEnabled: true
-      SSESpecification:
-        SSEEnabled: true
-      Tags:
-        - Key: Project
-          Value: MediSlot
-        - Key: Environment
-          Value: !Ref Environment
-
   SeatsTable:
     Type: AWS::DynamoDB::Table
     DeletionPolicy: Retain
@@ -580,17 +539,6 @@ Outputs:
     Value: !GetAtt DoctorSlotsTable.Arn
     Export:
       Name: !Sub 'medislot-${Environment}-doctor-slots-table-arn'
-
-  # LEGACY exports of the old slots table; removed with it in the follow-up change.
-  SlotsTableName:
-    Value: !Ref SlotsTable
-    Export:
-      Name: !Sub 'medislot-${Environment}-slots-table-name'
-
-  SlotsTableArn:
-    Value: !GetAtt SlotsTable.Arn
-    Export:
-      Name: !Sub 'medislot-${Environment}-slots-table-arn'
 
   SeatsTableName:
     Value: !Ref SeatsTable
