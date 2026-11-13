@@ -18,14 +18,14 @@ import time
 
 from medislot_common import config, db, logs, profiles
 from medislot_common.http import APIError, api_handler, identity, parse_body
-from medislot_common.validation import reject_unknown, text
+from medislot_common.validation import reject_unknown
 
-UPDATABLE = {"full_name", *profiles.PATIENT_FIELDS}
+UPDATABLE = {*profiles.NAME_FIELDS, *profiles.PATIENT_FIELDS}
 
 
 def view(row):
     return {key: row[key] for key in (
-        "patient_id", "user_id", "full_name", "email", "date_of_birth", "gender", "phone", "address", "city",
+        "patient_id", "user_id", "first_name", "last_name", "email", "date_of_birth", "gender", "phone", "address", "city",
         "emergency_contact_name", "emergency_contact_phone", "created_at", "updated_at",
     )}
 
@@ -45,10 +45,11 @@ def update_profile(event):
     values = profiles.patient_values(body)
     with db.transaction() as cur:
         current = profiles.require_patient(cur, caller.user_id)
-        if "full_name" in body:
+        names = profiles.name_values(body, required=False)
+        if names:
             cur.execute(
-                "UPDATE users SET full_name = %s WHERE user_id = %s",
-                (text(body["full_name"], "full_name", 120, required=True), caller.user_id),
+                f"UPDATE users SET {', '.join(f'{column} = %s' for column in names)} WHERE user_id = %s",
+                (*names.values(), caller.user_id),
             )
         if values:
             assignments = ", ".join(f"{column} = %s" for column in values)
@@ -56,6 +57,7 @@ def update_profile(event):
                 f"UPDATE patients SET {assignments} WHERE patient_id = %s",
                 [*values.values(), current["patient_id"]],
             )
+        logs.info("patient profile updated", patientId=current["patient_id"], fields=sorted(body))
         return 200, {"profile": view(profiles.require_patient(cur, caller.user_id))}
 
 
@@ -72,6 +74,7 @@ def delete_profile(event):
         )
         counts = cur.fetchone()
         if int(counts["upcoming"] or 0) > 0:
+            logs.warning("account removal refused", patientId=current["patient_id"], upcoming=int(counts["upcoming"]))
             raise APIError(409, "Cancel your upcoming appointments before deleting your account")
         if int(counts["total"] or 0) > 0:
             cur.execute("UPDATE users SET is_active = 0 WHERE user_id = %s", (caller.user_id,))
@@ -82,7 +85,8 @@ def delete_profile(event):
     config.table("TOKEN_REVOCATIONS_TABLE").put_item(
         Item={"jti": caller.jti, "userId": caller.user_id, "createdAt": int(time.time()), "expiresAt": caller.exp}
     )
-    logs.info("patient account removed", userId=caller.user_id, outcome=outcome)
+    logs.info("patient account removed", patientId=current["patient_id"], outcome=outcome,
+              pastAppointments=int(counts["total"] or 0), accessTokenRevoked=caller.jti)
     return 200, {"message": f"Account {outcome}"}
 
 

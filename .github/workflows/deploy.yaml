@@ -3,8 +3,9 @@ name: MediSlot CloudFormation CI/CD Pipeline
 # One workflow for everything.
 #   Pull request into main: Lint.
 #   Push to main (or Run workflow): Lint, then one job per stack, each a
-#   CloudFormation change set: network, data, iam, auth, app, jobs, the REST
-#   API and the web app. The web app comes last because it needs the API's URL.
+#   CloudFormation change set: network, data, iam, auth, app, jobs, then the
+#   database migrations, the REST API and the web app. The web app comes last
+#   because it needs the API's URL.
 #
 # AWS access is the AWS_ROLE_ARN repository secret (GitHub OIDC). network,
 # data and iam are deployed with that role; every other stack through the
@@ -133,7 +134,7 @@ jobs:
           --import RefreshTokensTable --import TokenRevocationsTable --import IdempotencyTable
           --import DoctorProfileFilesBucket
           --protect MediSlotMySQL --protect DoctorProfileFilesBucket
-          --protect RefreshTokensTable --protect TokenRevocationsTable --protect SlotsTable --protect SeatsTable
+          --protect RefreshTokensTable --protect TokenRevocationsTable --protect DoctorSlotsTable --protect SeatsTable
           --protect WaitlistTable --protect HoldOffersTable --protect IdempotencyTable --protect DispatchLogTable
 
   deploy-iam:
@@ -249,9 +250,41 @@ jobs:
           --param "Environment=${ENVIRONMENT}" --param "CodeS3Bucket=$ARTIFACT_BUCKET"
           --param "SlotMaterialiserCodeS3Key=$(jq -r '.functions["slot-materialiser"]' build/manifest.json)"
 
+  migrate-db:
+    name: Database Migrations
+    needs: deploy-jobs
+    runs-on: ubuntu-latest
+    steps:
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      # check: a Lambda in the private subnets reaches RDS over TLS.
+      # migrate: applies pending files from database/migrations in order.
+      - name: Connectivity check, then pending migrations
+        run: |
+          for action in check migrate status; do
+            aws lambda invoke --function-name "medislot-${ENVIRONMENT}-db-migrate" \
+              --cli-binary-format raw-in-base64-out --payload "{\"action\":\"${action}\"}" \
+              --cli-read-timeout 300 out.json > meta.json
+            echo "--- ${action}"; cat out.json; echo
+            if grep -q FunctionError meta.json; then echo "::error::db-migrate ${action} failed"; exit 1; fi
+          done
+      # Slot ids contain the consultation type id, so after a schema change the
+      # slots are rebuilt from the database. Idempotent: unchanged slots stay.
+      - name: Refresh slots
+        run: |
+          if aws lambda invoke --function-name "medislot-${ENVIRONMENT}-slot-materialiser" \
+              --cli-binary-format raw-in-base64-out --payload '{}' --cli-read-timeout 300 out.json > meta.json; then
+            cat out.json; echo
+            if grep -q FunctionError meta.json; then echo "::warning::slot-materialiser reported an error"; fi
+          else
+            echo "::warning::could not invoke slot-materialiser; it runs again at its daily schedule"
+          fi
+
   deploy-api:
     name: Deploy REST API
-    needs: deploy-jobs
+    needs: migrate-db
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5

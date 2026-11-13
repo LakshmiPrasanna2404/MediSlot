@@ -7,11 +7,12 @@ refresh token once and retries; if that fails the user is signed out.
 
 import base64
 import json
+import time
 
 import requests
 from flask import g, session
 
-from . import settings
+from . import settings, weblog
 
 TIMEOUT_SECONDS = 20
 
@@ -42,9 +43,24 @@ def _send(method, path, *, json_body=None, params=None, token=None):
     headers = {"X-Correlation-Id": g.get("correlation_id", "web"), "Accept": "application/json"}
     if token:
         headers["Authorization"] = f"Bearer {token}"
-    return requests.request(
-        method, settings.api_base_url() + path, json=json_body, params=params, headers=headers, timeout=TIMEOUT_SECONDS
-    )
+    started = time.perf_counter()
+    try:
+        response = requests.request(
+            method, settings.api_base_url() + path, json=json_body, params=params, headers=headers, timeout=TIMEOUT_SECONDS
+        )
+    except requests.RequestException as exc:
+        weblog.error("api call failed", apiMethod=method, apiPath=path, error=type(exc).__name__,
+                     durationMs=round((time.perf_counter() - started) * 1000, 1))
+        raise
+    fields = {"apiMethod": method, "apiPath": path, "apiStatus": response.status_code,
+              "durationMs": round((time.perf_counter() - started) * 1000, 1),
+              "apiRequestId": response.headers.get("x-amzn-RequestId")}
+    if response.status_code >= 400:
+        fields["apiError"] = _payload(response).get("error")
+        weblog.warning("api call", **fields)
+    else:
+        weblog.info("api call", **fields)
+    return response
 
 
 def _payload(response):
@@ -79,8 +95,10 @@ def refresh_tokens():
         return False
     response = _send("POST", "/auth/refresh", json_body={"refresh_token": refresh})
     if response.status_code != 200:
+        weblog.info("session refresh failed", apiStatus=response.status_code)
         return False
     store_tokens(_payload(response))
+    weblog.info("session tokens refreshed")
     return True
 
 
@@ -92,10 +110,12 @@ def call(method, path, json_body=None, params=None):
     response = _send(method, path, json_body=json_body, params=params, token=token)
     if response.status_code == 401:
         if not refresh_tokens():
+            weblog.info("session expired, signing out")
             session.clear()
             raise SessionExpired()
         response = _send(method, path, json_body=json_body, params=params, token=session["access_token"])
         if response.status_code == 401:
+            weblog.info("session expired, signing out")
             session.clear()
             raise SessionExpired()
     _raise_for(response)

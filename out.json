@@ -1,0 +1,1 @@
+{"database": "medislot", "applied": ["V001__create_schema.sql", "V002__align_with_final_schema.sql", "V003__indexes.sql", "V004__seed_specialisations.sql"], "skippedGuardedStatements": 31, "currentVersion": 4}

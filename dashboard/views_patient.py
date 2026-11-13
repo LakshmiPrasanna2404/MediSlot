@@ -10,7 +10,7 @@ from .security import role_required
 from .views_auth import form_body
 
 bp = Blueprint("patient", __name__, url_prefix="/patient")
-PROFILE_FIELDS = ["full_name", "date_of_birth", "gender", "phone", "address", "city",
+PROFILE_FIELDS = ["first_name", "last_name", "date_of_birth", "gender", "phone", "address", "city",
                   "emergency_contact_name", "emergency_contact_phone"]
 SEARCH_FILTERS = ("name", "hospital", "specialisation", "city")
 

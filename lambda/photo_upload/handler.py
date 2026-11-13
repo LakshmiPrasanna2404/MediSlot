@@ -4,14 +4,14 @@
 
 Returns a pre-signed S3 POST. The browser uploads the image straight to S3,
 so binary content never passes through API Gateway. The POST policy pins the
-object key and content type and caps the size (SSM photos/max-upload-bytes).
+object key and content type and caps the size (PhotoMaxUploadBytes parameter).
 The new key is stored on the doctor's profile.
 """
 
 import os
 import uuid
 
-from medislot_common import config, db, profiles
+from medislot_common import config, db, logs, profiles
 from medislot_common.http import APIError, api_handler, identity, parse_body
 from medislot_common.validation import reject_unknown
 
@@ -42,6 +42,8 @@ def create_upload(event):
         "UPDATE doctors SET profile_photo_s3_key = %s WHERE doctor_id = %s",
         (key, doctor["doctor_id"]),
     )
+    logs.info("photo upload link issued", doctorId=doctor["doctor_id"], s3Key=key, contentType=content_type,
+              maxBytes=max_bytes, expiresInSeconds=expires)
     return 200, {
         "upload": {"url": upload["url"], "method": "POST", "fields": upload["fields"]},
         "s3_key": key,

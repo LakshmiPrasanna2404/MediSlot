@@ -9,7 +9,7 @@ Routes (REST API, Lambda proxy):
     POST /auth/logout              protected by the Lambda authorizer
 
 * Passwords: bcrypt, work factor from the auth stack (12 or higher, enforced here too).
-  Policy: at least 10 characters (SSM), one letter and one digit.
+  Policy: at least 10 characters (auth stack parameter), one letter and one digit.
 * Access token: HS256 JWT, 15 minutes (SSM), exactly sub/role/iat/exp/jti.
 * Refresh token: opaque random string, 7 days (SSM), stored only as a
   SHA-256 hash in DynamoDB (refresh-tokens, TTL on expiresAt). Rotated on
@@ -43,7 +43,7 @@ GENERIC_LOGIN_ERROR = "Invalid email or password"
 # long as checking a real password.
 _DUMMY_HASH = "$2b$12$zGA4WprPvgYv3hrOwpKZtuGJCoRJupIVdb7kUIk.sz46QJWXOEoDi"
 
-COMMON_FIELDS = {"full_name", "email", "password"}
+COMMON_FIELDS = {"first_name", "last_name", "email", "password"}
 DOCTOR_FIELDS = COMMON_FIELDS | {
     "licence_number", "specialisation", "hospital_name", "hospital_address", "hospital_city",
     "years_experience", "qualifications", "languages", "timezone",
@@ -150,7 +150,7 @@ def issue_session(user_id, role):
 def register(event, role):
     body = parse_body(event)
     reject_unknown(body, DOCTOR_FIELDS if role == "doctor" else PATIENT_FIELDS)
-    full_name = text(body.get("full_name"), "full_name", 120, required=True)
+    names = profiles.name_values(body, required=True)
     address = valid_email(body.get("email"))
     password = body.get("password")
     check_password_policy(password)
@@ -165,8 +165,9 @@ def register(event, role):
     try:
         with db.transaction() as cur:
             cur.execute(
-                "INSERT INTO users (user_id, full_name, email, password_hash, role) VALUES (%s, %s, %s, %s, %s)",
-                (user_id, full_name, address, password_hash, role),
+                "INSERT INTO users (user_id, first_name, last_name, email, password_hash, role)"
+                " VALUES (%s, %s, %s, %s, %s, %s)",
+                (user_id, names["first_name"], names["last_name"], address, password_hash, role),
             )
             if role == "doctor":
                 values = {"licence_number": licence, **profiles.doctor_values(cur, body, creating=True)}
@@ -190,7 +191,7 @@ def register(event, role):
     logs.info("account registered", userId=user_id, role=role)
     return 201, {
         "message": "Registration successful",
-        "user": {"user_id": user_id, "full_name": full_name, "email": address, "role": role},
+        "user": {"user_id": user_id, **names, "email": address, "role": role},
         f"{role}_id": profile_id,
     }
 
@@ -202,19 +203,24 @@ def login(event, role):
     if not isinstance(address, str) or not address.strip() or not isinstance(password, str):
         raise APIError(400, "email and password are required")
     user = db.fetch_one(
-        "SELECT user_id, full_name, email, password_hash, role, is_active FROM users WHERE email = %s AND role = %s",
+        "SELECT user_id, first_name, last_name, email, password_hash, role, is_active"
+        " FROM users WHERE email = %s AND role = %s",
         (address.strip().lower(), role),
     )
     valid = password_matches(password, user["password_hash"] if user else _DUMMY_HASH)
     if not user or not valid or not user["is_active"]:
+        # The caller always gets the same message; the log keeps the real reason.
+        reason = "unknown_email" if not user else "wrong_password" if not valid else "account_deactivated"
         logs.metric("LoginFailures", Role=role)
-        logs.info("login rejected", role=role)
+        logs.warning("login rejected", loginRole=role, reason=reason, userId=user["user_id"] if user else None)
         raise APIError(401, GENERIC_LOGIN_ERROR)
     session = issue_session(user["user_id"], role)
     logs.metric("LoginSuccesses", Role=role)
+    logs.info("login succeeded", userId=user["user_id"], loginRole=role)
     session["user"] = {
         "user_id": user["user_id"],
-        "full_name": user["full_name"],
+        "first_name": user["first_name"],
+        "last_name": user["last_name"],
         "email": user["email"],
         "role": role,
     }
@@ -225,14 +231,17 @@ def refresh(event):
     body = parse_body(event)
     raw = body.get("refresh_token")
     if not isinstance(raw, str) or not raw.strip():
+        logs.warning("refresh rejected", reason="missing_token")
         raise APIError(401, "Invalid or expired refresh token")
     old_hash = tokens.refresh_token_hash(raw.strip())
     now = int(time.time())
     item = refresh_table().get_item(Key={"tokenHash": old_hash}, ConsistentRead=True).get("Item")
     if not item or int(item.get("expiresAt", 0)) <= now:
+        logs.warning("refresh rejected", reason="unknown_or_expired_token")
         raise APIError(401, "Invalid or expired refresh token")
     user = db.fetch_one("SELECT user_id, role, is_active FROM users WHERE user_id = %s", (item["userId"],))
     if not user or not user["is_active"]:
+        logs.warning("refresh rejected", reason="account_deactivated", userId=item["userId"])
         raise APIError(401, "Invalid or expired refresh token")
 
     cfg = settings()
@@ -268,8 +277,10 @@ def refresh(event):
         )
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") in ("TransactionCanceledException", "ConditionalCheckFailedException"):
+            logs.warning("refresh rejected", reason="token_already_used", userId=user["user_id"])
             raise APIError(401, "Refresh token is invalid or has already been used") from None
         raise
+    logs.info("tokens refreshed", userId=user["user_id"], userRole=user["role"])
     return 200, {
         "token_type": "Bearer",
         "access_token": access_token,
@@ -283,6 +294,7 @@ def logout(event):
     caller = identity(event)  # set by the Lambda authorizer
     body = parse_body(event)
     raw = body.get("refresh_token")
+    refresh_revoked = False
     if raw is not None:
         if not isinstance(raw, str) or not raw.strip():
             raise APIError(400, "refresh_token must be a string")
@@ -290,6 +302,7 @@ def logout(event):
         item = refresh_table().get_item(Key={"tokenHash": token_hash}, ConsistentRead=True).get("Item")
         if item and item.get("userId") != caller.user_id:
             raise APIError(400, "Refresh token belongs to another user")
+        refresh_revoked = bool(item)
         if item:
             try:
                 refresh_table().delete_item(
@@ -311,7 +324,7 @@ def logout(event):
             "expiresAt": caller.exp,
         }
     )
-    logs.info("logged out", userId=caller.user_id)
+    logs.info("logged out", userId=caller.user_id, accessTokenRevoked=caller.jti, refreshTokenRevoked=refresh_revoked)
     return 200, {"message": "Logged out"}
 
 

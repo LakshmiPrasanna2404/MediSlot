@@ -5,6 +5,11 @@ that produced it. The ID comes from the X-Correlation-Id header when the web
 app sends one, otherwise from API Gateway's request ID, so it is generated at
 the edge and threaded through every line and event payload.
 
+Fields set with set_context() (the route and the caller's userId and role) are
+added to every line of the request, so a business event such as "slots
+synced" always says who did it and through which route. Never logged:
+passwords, tokens, request bodies, emails.
+
 Custom metrics use the CloudWatch Embedded Metric Format: a JSON log line that
 CloudWatch turns into a metric. VPC-attached functions need no extra endpoint.
 """
@@ -17,14 +22,20 @@ import time
 
 METRIC_NAMESPACE = "medislot"
 
-_state = {"correlation_id": None, "aws_request_id": None, "api_request_id": None}
+_state = {"correlation_id": None, "aws_request_id": None, "api_request_id": None, "context": {}}
 
 
 def set_correlation_id(value, aws_request_id=None, api_request_id=None):
-    """api_request_id is API Gateway's request ID, the key of its access log line."""
+    """Start a new request: api_request_id is API Gateway's request ID, the key of its access log line."""
     _state["correlation_id"] = value
     _state["aws_request_id"] = aws_request_id
     _state["api_request_id"] = api_request_id
+    _state["context"] = {}
+
+
+def set_context(**fields):
+    """Fields added to every following line of this request (None values are skipped)."""
+    _state["context"].update({key: value for key, value in fields.items() if value is not None})
 
 
 def correlation_id():
@@ -45,6 +56,7 @@ class JsonFormatter(logging.Formatter):
         }
         if _state["api_request_id"]:
             entry["apiRequestId"] = _state["api_request_id"]
+        entry.update(_state["context"])
         fields = getattr(record, "fields", None)
         if fields:
             entry.update(fields)
@@ -66,7 +78,7 @@ def get_logger(name="medislot"):
 
 
 def log(level, message, **fields):
-    get_logger().log(level, message, extra={"fields": fields})
+    get_logger().log(level, message, extra={"fields": {k: v for k, v in fields.items() if v is not None}})
 
 
 def info(message, **fields):

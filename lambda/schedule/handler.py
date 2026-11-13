@@ -6,14 +6,14 @@
     GET /doctors/me/appointments?from=YYYY-MM-DD&to=YYYY-MM-DD&status=CONFIRMED
         The doctor's appointments in a local date range (default: next 30 days).
 
-Slots come from DynamoDB (GSI_Doctor_Slots: doctorId + startTime), the
+Slots come from DynamoDB (doctor-slots table, key doctorId + startTime), the
 patients booked into them from RDS (appointments, the system of record).
 """
 
 from datetime import timedelta
 from zoneinfo import ZoneInfo
 
-from medislot_common import config, db, profiles, slots
+from medislot_common import config, db, logs, profiles, slots
 from medislot_common.http import APIError, api_handler, identity, query
 from medislot_common.validation import iso_date
 
@@ -41,19 +41,22 @@ def schedule(event):
         start_utc, end_utc = slots.doctor_local_range(tz_name, first_day, days)
 
         cur.execute(
-            "SELECT consultation_type_id, name, fee, duration_minutes FROM consultation_types WHERE doctor_id = %s",
+            """SELECT dct.consultation_type_id, ct.name, dct.fee, ct.duration_minutes
+               FROM doctor_consultation_types dct
+               JOIN consultation_types ct ON ct.consultation_type_id = dct.consultation_type_id
+               WHERE dct.doctor_id = %s""",
             (doctor["doctor_id"],),
         )
         types = {row["consultation_type_id"]: row for row in cur.fetchall()}
         cur.execute(
-            f"""SELECT a.appointment_id, a.slot_id, a.status, a.patient_id, u.full_name AS patient_name,
-                       p.phone AS patient_phone
+            f"""SELECT a.appointment_id, a.slot_id, a.status, a.patient_id, u.first_name AS patient_first_name,
+                       u.last_name AS patient_last_name, p.phone AS patient_phone
                 FROM appointments a
                 JOIN patients p ON p.patient_id = a.patient_id
                 JOIN users u ON u.user_id = p.user_id
                 WHERE a.doctor_id = %s AND a.slot_start_utc >= %s AND a.slot_start_utc < %s
                   AND a.status IN ({', '.join(['%s'] * len(SHOWN_ON_SCHEDULE))})
-                ORDER BY a.slot_start_utc, u.full_name""",
+                ORDER BY a.slot_start_utc, u.first_name, u.last_name""",
             (doctor["doctor_id"], _naive_utc(start_utc), _naive_utc(end_utc), *SHOWN_ON_SCHEDULE),
         )
         patients_by_slot = {}
@@ -72,6 +75,8 @@ def schedule(event):
         local_day = slots.parse_iso_utc(item["startTime"]).astimezone(ZoneInfo(tz_name)).date()
         by_day.setdefault(local_day, []).append(entry)
 
+    logs.info("schedule read", doctorId=doctor["doctor_id"], view=view_name, date=first_day, slots=len(items),
+              bookedPatients=sum(len(rows) for rows in patients_by_slot.values()))
     return 200, {
         "doctor_id": doctor["doctor_id"],
         "timezone": tz_name,
@@ -100,10 +105,9 @@ def appointments(event):
         start_utc, end_utc = slots.doctor_local_range(tz_name, first, (last - first).days + 1)
         sql = """SELECT a.appointment_id, a.slot_id, a.status, a.slot_start_utc, a.slot_end_utc,
                         a.consultation_fee, a.reschedule_count, ct.name AS consultation_type_name,
-                        a.patient_id, u.full_name AS patient_name
+                        a.patient_id, u.first_name AS patient_first_name, u.last_name AS patient_last_name
                  FROM appointments a
-                 JOIN consultation_types ct
-                   ON ct.doctor_id = a.doctor_id AND ct.consultation_type_id = a.consultation_type_id
+                 JOIN consultation_types ct ON ct.consultation_type_id = a.consultation_type_id
                  JOIN patients p ON p.patient_id = a.patient_id
                  JOIN users u ON u.user_id = p.user_id
                  WHERE a.doctor_id = %s AND a.slot_start_utc >= %s AND a.slot_start_utc < %s"""
@@ -113,6 +117,8 @@ def appointments(event):
             values.append(status)
         cur.execute(sql + " ORDER BY a.slot_start_utc LIMIT 500", values)
         rows = cur.fetchall()
+    logs.info("appointments listed", doctorId=doctor["doctor_id"], dateFrom=first, dateTo=last, status=status,
+              count=len(rows))
     return 200, {"timezone": tz_name, "from": first, "to": last, "appointments": rows}
 
 

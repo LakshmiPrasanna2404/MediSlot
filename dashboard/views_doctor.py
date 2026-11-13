@@ -10,7 +10,7 @@ from .security import role_required
 from .views_auth import form_body
 
 bp = Blueprint("doctor", __name__, url_prefix="/doctor")
-PROFILE_FIELDS = ["full_name", "specialisation", "hospital_name", "hospital_address", "hospital_city",
+PROFILE_FIELDS = ["first_name", "last_name", "specialisation", "hospital_name", "hospital_address", "hospital_city",
                   "years_experience", "qualifications", "languages", "timezone"]
 
 

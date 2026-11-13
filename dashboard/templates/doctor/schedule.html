@@ -52,7 +52,7 @@
               </span>
             </td>
             <td data-label="Patients">
-              {% for p in slot.patients %}<div class="patient">{{ p.patient_name }} <span class="chip status-{{ p.status|lower }}">{{ p.status|capitalize }}</span></div>
+              {% for p in slot.patients %}<div class="patient">{{ p|person_name('patient_') }} <span class="chip status-{{ p.status|lower }}">{{ p.status|capitalize }}</span></div>
               {% else %}<span class="muted">None yet</span>{% endfor %}
             </td>
             <td data-label="Status"><span class="chip status-{{ slot.status|lower }}">{{ slot.status|capitalize }}</span></td>

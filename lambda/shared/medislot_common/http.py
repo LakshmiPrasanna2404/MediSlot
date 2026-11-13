@@ -7,6 +7,7 @@ never used to decide who the caller is.
 
 import base64
 import json
+import logging
 import re
 import time
 import uuid
@@ -162,10 +163,32 @@ _MYSQL_CLIENT_ERRORS = {
 }
 
 
+def _short(value, limit=100):
+    text = str(value)
+    return text if len(text) <= limit else text[:limit] + "..."
+
+
+def _request_fields(event):
+    """What the request asked for, for the 'request received' line. Never the body."""
+    request = event.get("requestContext") or {}
+    source = request.get("identity") or {}
+    return {
+        "pathParameters": {k: _short(v) for k, v in (event.get("pathParameters") or {}).items()} or None,
+        "queryParameters": {k: _short(v) for k, v in (event.get("queryStringParameters") or {}).items()} or None,
+        "hasBody": bool(event.get("body")),
+        "sourceIp": source.get("sourceIp"),
+        "userAgent": _short(source.get("userAgent") or header(event, "User-Agent") or "", 120) or None,
+    }
+
+
 def api_handler(routes):
     """Build a Lambda handler that dispatches on 'METHOD /resource'.
 
     Each route function receives (event) and returns (status, payload).
+    Every request writes a 'request received' line (route, caller, path and
+    query parameters, source IP) and a 'request completed' line (status,
+    duration, and the error message for a 4xx). Lines in between, written by
+    the route itself, carry the same route, userId and role.
     """
     def handler(event, context):
         logs.set_correlation_id(
@@ -175,6 +198,10 @@ def api_handler(routes):
         )
         started = time.perf_counter()
         key = route_key(event)
+        caller = (event.get("requestContext") or {}).get("authorizer") or {}
+        logs.set_context(route=key, userId=caller.get("userId"), role=caller.get("role"))
+        logs.info("request received", **_request_fields(event))
+        error_message = None
         try:
             route = routes.get(key)
             if route is None:
@@ -185,6 +212,7 @@ def api_handler(routes):
             body = {"error": exc.message}
             if exc.details is not None:
                 body["details"] = exc.details
+            error_message = exc.message
             result = response(exc.status, body)
         except pymysql.MySQLError as exc:
             code = exc.args[0] if exc.args and isinstance(exc.args[0], int) else None
@@ -201,10 +229,14 @@ def api_handler(routes):
         except Exception:  # noqa: BLE001 - last-resort guard, logged with stack trace
             logs.exception("Unhandled error", route=key)
             result = response(500, {"error": "Internal server error"})
-        logs.info(
+        status = result["statusCode"]
+        level = logging.ERROR if status >= 500 else logging.WARNING if status >= 400 else logging.INFO
+        logs.log(
+            level,
             "request completed",
-            route=key,
-            status=result["statusCode"],
+            status=status,
+            outcome="ok" if status < 400 else "rejected" if status < 500 else "failed",
+            error=error_message,
             durationMs=round((time.perf_counter() - started) * 1000, 1),
         )
         return result

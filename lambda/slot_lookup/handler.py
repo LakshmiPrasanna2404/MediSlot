@@ -10,7 +10,7 @@ free_seats = 0 so the UI can show them as full.
 
 from datetime import timedelta
 
-from medislot_common import config, db, slots
+from medislot_common import config, db, logs, slots
 from medislot_common.http import APIError, api_handler, identity, path_param, query
 from medislot_common.validation import integer, iso_date, uuid_value
 
@@ -34,8 +34,10 @@ def lookup(event):
         if not doctor:
             raise APIError(404, "Doctor not found")
         cur.execute(
-            """SELECT consultation_type_id, name, fee, duration_minutes
-               FROM consultation_types WHERE doctor_id = %s AND is_active = 1""",
+            """SELECT dct.consultation_type_id, ct.name, dct.fee, ct.duration_minutes
+               FROM doctor_consultation_types dct
+               JOIN consultation_types ct ON ct.consultation_type_id = dct.consultation_type_id
+               WHERE dct.doctor_id = %s AND dct.is_active = 1""",
             (doctor_id,),
         )
         types = {row["consultation_type_id"]: row for row in cur.fetchall()}
@@ -68,6 +70,8 @@ def lookup(event):
         entry["consultation_type_name"] = types[type_id]["name"]
         entry["fee"] = types[type_id]["fee"]
         result.append(entry)
+    logs.info("slots looked up", doctorId=doctor_id, dateFrom=first, dateTo=last, consultationTypeId=type_filter,
+              slots=len(result), fullSlots=sum(1 for entry in result if entry["free_seats"] == 0))
     return 200, {"doctor_id": doctor_id, "timezone": tz_name, "from": first, "to": last, "slots": result}
 
 

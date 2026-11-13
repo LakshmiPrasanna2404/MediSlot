@@ -150,7 +150,7 @@ Resources:
           DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/db/username
           DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
           SLOTS_TABLE: !ImportValue
-            Fn::Sub: medislot-${Environment}-slots-table-name
+            Fn::Sub: medislot-${Environment}-doctor-slots-table-name
           DOCTOR_FILES_BUCKET: !ImportValue
             Fn::Sub: medislot-${Environment}-doctor-files-bucket-name
       Tags:
@@ -318,7 +318,7 @@ Resources:
           DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/db/username
           DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
           SLOTS_TABLE: !ImportValue
-            Fn::Sub: medislot-${Environment}-slots-table-name
+            Fn::Sub: medislot-${Environment}-doctor-slots-table-name
       Tags:
         - Key: Project
           Value: MediSlot
@@ -373,7 +373,7 @@ Resources:
           DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/db/username
           DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
           SLOTS_TABLE: !ImportValue
-            Fn::Sub: medislot-${Environment}-slots-table-name
+            Fn::Sub: medislot-${Environment}-doctor-slots-table-name
       Tags:
         - Key: Project
           Value: MediSlot
@@ -542,7 +542,7 @@ Resources:
           DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/db/username
           DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
           SLOTS_TABLE: !ImportValue
-            Fn::Sub: medislot-${Environment}-slots-table-name
+            Fn::Sub: medislot-${Environment}-doctor-slots-table-name
       Tags:
         - Key: Project
           Value: MediSlot

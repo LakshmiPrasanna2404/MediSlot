@@ -1,7 +1,7 @@
-"""Slot materialisation and the DynamoDB slots table.
+"""Slot materialisation and the DynamoDB doctor-slots table.
 
 Weekly availability is stored in the doctor's local time (RDS). Slots are
-materialised into DynamoDB for a rolling window (30 days by default, from SSM).
+materialised into DynamoDB for a rolling window (30 days by default, an app stack parameter).
 
 Rules implemented here:
 * Slot start times step from the pattern start in multiples of the
@@ -13,12 +13,17 @@ Rules implemented here:
   slot whose real length differs from its nominal length (it spans a DST
   change, which only happens for night-time patterns) is skipped too. An
   ambiguous local time (fall-back overlap) uses the first occurrence (fold=0).
-* slotId = <doctorId>#<consultationTypeId>#<YYYYMMDD>#<HHMM> in local time, so
-  it is deterministic. Writes use attribute_not_exists(slotId), which makes
-  every run idempotent: re-running a date creates no duplicates.
+* The table key is (doctorId, startTime): partition key doctorId, sort key
+  the UTC start time. A doctor can therefore never have two slots that start
+  at the same moment; the database refuses a second one. Creates use
+  attribute_not_exists(startTime), so re-running a date creates nothing new.
+* slotId = <doctorId>#<startTime>, e.g. 7f1c...#2026-11-16T03:30:00Z. It is
+  stored on the item and used by appointments, seats and the waitlist; the
+  table key is read back from it with slot_key().
 * Blackout dates produce no slots. Existing future OPEN slots that no longer
-  match a pattern (pattern removed, blackout added) are deleted only when
-  nobody holds a seat in them.
+  match a pattern (pattern removed, blackout added, time zone changed) are
+  deleted, and slots whose type, length or seats changed are rewritten, but
+  only when nobody holds a seat in them.
 """
 
 from concurrent.futures import ThreadPoolExecutor
@@ -30,7 +35,6 @@ from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
 UTC = UTC
-DOCTOR_SLOTS_INDEX = "GSI_Doctor_Slots"
 ISO_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 WRITE_WORKERS = 8
 
@@ -58,12 +62,12 @@ class SlotSpec:
     capacity: int
 
     def item(self):
-        """The DynamoDB item, attributes exactly as in the slots table design."""
+        """The DynamoDB item, attributes exactly as in the doctor-slots table design."""
         return {
-            "slotId": self.slot_id,
             "doctorId": self.doctor_id,
-            "consultationTypeId": str(self.consultation_type_id),
             "startTime": iso_utc(self.start_utc),
+            "slotId": self.slot_id,
+            "consultationTypeId": str(self.consultation_type_id),
             "endTime": iso_utc(self.end_utc),
             "timezone": self.timezone,
             "status": "OPEN",
@@ -82,8 +86,16 @@ def parse_iso_utc(value):
     return datetime.strptime(value, ISO_FORMAT).replace(tzinfo=UTC)
 
 
-def make_slot_id(doctor_id, consultation_type_id, local_start):
-    return f"{doctor_id}#{consultation_type_id}#{local_start:%Y%m%d}#{local_start:%H%M}"
+def make_slot_id(doctor_id, start_utc):
+    return f"{doctor_id}#{iso_utc(start_utc)}"
+
+
+def slot_key(slot_id):
+    """The table key for a slotId: {"doctorId": ..., "startTime": ...}."""
+    doctor_id, separator, start_time = str(slot_id).partition("#")
+    if not separator or not doctor_id or not start_time:
+        raise ValueError(f"not a slot id: {slot_id!r}")
+    return {"doctorId": doctor_id, "startTime": start_time}
 
 
 def localize(naive, zone):
@@ -125,7 +137,7 @@ def slots_for_date(doctor_id, tz_name, day, patterns, blackouts=frozenset()):
                 if end_utc - start_utc == step:
                     result.append(
                         SlotSpec(
-                            slot_id=make_slot_id(doctor_id, pattern.consultation_type_id, cursor),
+                            slot_id=make_slot_id(doctor_id, start_utc),
                             doctor_id=doctor_id,
                             consultation_type_id=pattern.consultation_type_id,
                             timezone=tz_name,
@@ -170,11 +182,12 @@ def window_slots(doctor_id, tz_name, patterns, blackouts, now_utc, days):
 
 PATTERNS_SQL = """
     SELECT ap.availability_id, ap.consultation_type_id, ap.day_of_week,
-           ap.start_time, ap.end_time, ct.duration_minutes, ct.capacity
+           ap.start_time, ap.end_time, ct.duration_minutes, dct.capacity
     FROM availability_patterns ap
-    JOIN consultation_types ct
-      ON ct.doctor_id = ap.doctor_id AND ct.consultation_type_id = ap.consultation_type_id
-    WHERE ap.doctor_id = %s AND ap.is_active = 1 AND ct.is_active = 1
+    JOIN doctor_consultation_types dct
+      ON dct.doctor_id = ap.doctor_id AND dct.consultation_type_id = ap.consultation_type_id
+    JOIN consultation_types ct ON ct.consultation_type_id = ap.consultation_type_id
+    WHERE ap.doctor_id = %s AND ap.is_active = 1 AND dct.is_active = 1
     ORDER BY ap.day_of_week, ap.start_time
 """
 
@@ -211,11 +224,14 @@ def load_doctor_inputs(cursor, doctor_id, from_date, to_date):
 # ---------------------------------------------------------------------------
 
 
-def query_doctor_slots(table, doctor_id, start_iso, end_iso):
-    """Slots with start_iso <= startTime < end_iso, via GSI_Doctor_Slots."""
+def query_doctor_slots(table, doctor_id, start_iso, end_iso, consistent=False):
+    """The doctor's slots with start_iso <= startTime < end_iso, in time order.
+
+    One Query on the table's own key (doctorId, startTime); no index needed.
+    """
     kwargs = {
-        "IndexName": DOCTOR_SLOTS_INDEX,
         "KeyConditionExpression": Key("doctorId").eq(doctor_id) & Key("startTime").between(start_iso, end_iso),
+        "ConsistentRead": consistent,
     }
     items = []
     while True:
@@ -231,8 +247,41 @@ def _is_condition_failure(exc):
     return exc.response.get("Error", {}).get("Code") == "ConditionalCheckFailedException"
 
 
+UNBOOKED = "#status = :open AND bookedCount = :zero AND heldCount = :zero"
+UNBOOKED_NAMES = {"#status": "status"}
+UNBOOKED_VALUES = {":open": "OPEN", ":zero": 0}
+
+
+def _run(specs, write):
+    if not specs:
+        return []
+    with ThreadPoolExecutor(max_workers=WRITE_WORKERS) as pool:
+        return list(pool.map(write, specs))
+
+
 def create_slots(table, specs):
-    """Conditional put per slot. Returns (created, already_existing)."""
+    """Put each new slot unless one already starts then. Returns (created, already_existing)."""
+    client = table.meta.client
+
+    def put(spec):
+        try:
+            client.put_item(TableName=table.name, Item=spec.item(), ConditionExpression="attribute_not_exists(startTime)")
+            return True
+        except ClientError as exc:
+            if _is_condition_failure(exc):
+                return False
+            raise
+
+    outcomes = _run(specs, put)
+    created = sum(1 for ok in outcomes if ok)
+    return created, len(outcomes) - created
+
+
+def replace_unbooked(table, specs):
+    """Rewrite slots whose type, length or seats changed, if nobody holds a seat.
+
+    Returns (replaced, kept_slot_ids).
+    """
     client = table.meta.client
 
     def put(spec):
@@ -240,34 +289,32 @@ def create_slots(table, specs):
             client.put_item(
                 TableName=table.name,
                 Item=spec.item(),
-                ConditionExpression="attribute_not_exists(slotId)",
+                ConditionExpression=UNBOOKED,
+                ExpressionAttributeNames=UNBOOKED_NAMES,
+                ExpressionAttributeValues=UNBOOKED_VALUES,
             )
-            return True
+            return spec.slot_id, True
         except ClientError as exc:
             if _is_condition_failure(exc):
-                return False
+                return spec.slot_id, False
             raise
 
-    if not specs:
-        return 0, 0
-    with ThreadPoolExecutor(max_workers=WRITE_WORKERS) as pool:
-        outcomes = list(pool.map(put, specs))
-    created = sum(1 for ok in outcomes if ok)
-    return created, len(outcomes) - created
+    outcomes = _run(specs, put)
+    return sum(1 for _, ok in outcomes if ok), sorted(slot_id for slot_id, ok in outcomes if not ok)
 
 
 def delete_unbooked(table, slot_ids):
-    """Delete OPEN slots nobody holds a seat in. Returns (removed, kept_ids)."""
+    """Delete OPEN slots nobody holds a seat in. Returns (removed, kept_slot_ids)."""
     client = table.meta.client
 
     def delete(slot_id):
         try:
             client.delete_item(
                 TableName=table.name,
-                Key={"slotId": slot_id},
-                ConditionExpression="#status = :open AND bookedCount = :zero AND heldCount = :zero",
-                ExpressionAttributeNames={"#status": "status"},
-                ExpressionAttributeValues={":open": "OPEN", ":zero": 0},
+                Key=slot_key(slot_id),
+                ConditionExpression=UNBOOKED,
+                ExpressionAttributeNames=UNBOOKED_NAMES,
+                ExpressionAttributeValues=UNBOOKED_VALUES,
             )
             return slot_id, True
         except ClientError as exc:
@@ -275,51 +322,53 @@ def delete_unbooked(table, slot_ids):
                 return slot_id, False
             raise
 
-    if not slot_ids:
-        return 0, []
-    with ThreadPoolExecutor(max_workers=WRITE_WORKERS) as pool:
-        outcomes = list(pool.map(delete, slot_ids))
+    outcomes = _run(slot_ids, delete)
     return sum(1 for _, ok in outcomes if ok), sorted(slot_id for slot_id, ok in outcomes if not ok)
+
+
+def _same_slot(item, spec):
+    """True when an existing item already is the slot the patterns ask for."""
+    wanted = spec.item()
+    return all(str(item.get(name)) == str(wanted[name])
+               for name in ("consultationTypeId", "endTime", "timezone", "capacity", "slotId"))
 
 
 def sync_doctor(table, doctor_id, tz_name, patterns, blackouts, now_utc, days):
     """Make the doctor's future slots match their patterns and blackouts.
 
     Used by the daily materialiser and right after a doctor edits availability,
-    blackouts or time zone. Safe to run any number of times.
+    blackouts or time zone. Safe to run any number of times: the table holds
+    at most one slot per (doctorId, startTime), so nothing is ever duplicated.
     """
     desired = window_slots(doctor_id, tz_name, patterns, blackouts, now_utc, days)
-    desired_by_id = {spec.slot_id: spec for spec in desired}
+    desired_by_start = {iso_utc(spec.start_utc): spec for spec in desired}
     start_iso = iso_utc(now_utc)
     end_iso = iso_utc(max(window_end_utc(tz_name, now_utc, days), now_utc + timedelta(days=days + 2)))
-    existing = [item for item in query_doctor_slots(table, doctor_id, start_iso, end_iso) if item["startTime"] > start_iso]
+    existing = [item for item in query_doctor_slots(table, doctor_id, start_iso, end_iso, consistent=True)
+                if item["startTime"] > start_iso]
 
-    stale = []
-    orphans = []
-    existing_ids = set()
+    orphans, changed, existing_starts = [], [], set()
     for item in existing:
-        existing_ids.add(item["slotId"])
-        spec = desired_by_id.get(item["slotId"])
+        existing_starts.add(item["startTime"])
+        spec = desired_by_start.get(item["startTime"])
         if spec is None:
             if item.get("status") == "OPEN":
-                orphans.append(item["slotId"])
-        elif item["startTime"] != iso_utc(spec.start_utc) or item.get("timezone") != tz_name:
-            stale.append(item["slotId"])  # same local slot, but the doctor changed time zone
+                orphans.append(item["slotId"])  # no pattern wants this time any more
+        elif not _same_slot(item, spec):
+            changed.append(spec)  # same time, but another type, length, seat count or zone
 
     removed, kept_orphans = delete_unbooked(table, orphans)
-    removed_stale, kept_stale = delete_unbooked(table, stale)
-    stale_ids = set(stale)
-    recreate = [desired_by_id[slot_id] for slot_id in stale if slot_id not in set(kept_stale)]
-    to_create = [spec for spec in desired if spec.slot_id not in existing_ids] + recreate
+    updated, kept_changed = replace_unbooked(table, changed)
+    to_create = [spec for start, spec in desired_by_start.items() if start not in existing_starts]
     created, already = create_slots(table, to_create)
-    unchanged = sum(1 for spec in desired if spec.slot_id in existing_ids and spec.slot_id not in stale_ids)
     return {
         "doctorId": doctor_id,
         "desired": len(desired),
         "created": created,
-        "alreadyExisted": unchanged + already,
-        "removed": removed + removed_stale,
-        "keptBecauseBooked": kept_orphans + kept_stale,
+        "updated": updated,
+        "alreadyExisted": len(existing_starts & set(desired_by_start)) - len(changed) + already,
+        "removed": removed,
+        "keptBecauseBooked": kept_orphans + kept_changed,
     }
 
 

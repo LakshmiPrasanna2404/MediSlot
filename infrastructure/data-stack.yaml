@@ -168,34 +168,29 @@ Resources:
   # ---------------------------------------------------------------------------
   # DynamoDB: booking
   # ---------------------------------------------------------------------------
-  # slotId = <doctorId>#<consultationTypeId>#<YYYYMMDD>#<HHMM> (deterministic).
+  # One item per bookable slot. Key: partition doctorId, sort startTime (UTC
+  # ISO-8601, e.g. 2026-11-16T03:30:00Z). Every read is "this doctor's slots
+  # between two times" (one Query on the key) or "this one slot" (doctorId +
+  # startTime, read back from slotId = <doctorId>#<startTime>). The key also
+  # means a doctor can never have two slots that start at the same moment.
   # The contended write target: conditional writes on version and capacity.
-  SlotsTable:
+  DoctorSlotsTable:
     Type: AWS::DynamoDB::Table
     DeletionPolicy: Retain
     UpdateReplacePolicy: Retain
     Properties:
-      TableName: !Sub 'medislot-${Environment}-slots'
+      TableName: !Sub 'medislot-${Environment}-doctor-slots'
       BillingMode: PAY_PER_REQUEST
       AttributeDefinitions:
-        - AttributeName: slotId
-          AttributeType: S
         - AttributeName: doctorId
           AttributeType: S
         - AttributeName: startTime
           AttributeType: S
       KeySchema:
-        - AttributeName: slotId
+        - AttributeName: doctorId
           KeyType: HASH
-      GlobalSecondaryIndexes:
-        - IndexName: GSI_Doctor_Slots
-          KeySchema:
-            - AttributeName: doctorId
-              KeyType: HASH
-            - AttributeName: startTime
-              KeyType: RANGE
-          Projection:
-            ProjectionType: ALL
+        - AttributeName: startTime
+          KeyType: RANGE
       PointInTimeRecoverySpecification:
         PointInTimeRecoveryEnabled: true
       SSESpecification:
@@ -535,15 +530,15 @@ Outputs:
     Export:
       Name: !Sub 'medislot-${Environment}-idempotency-table-arn'
 
-  SlotsTableName:
-    Value: !Ref SlotsTable
+  DoctorSlotsTableName:
+    Value: !Ref DoctorSlotsTable
     Export:
-      Name: !Sub 'medislot-${Environment}-slots-table-name'
+      Name: !Sub 'medislot-${Environment}-doctor-slots-table-name'
 
-  SlotsTableArn:
-    Value: !GetAtt SlotsTable.Arn
+  DoctorSlotsTableArn:
+    Value: !GetAtt DoctorSlotsTable.Arn
     Export:
-      Name: !Sub 'medislot-${Environment}-slots-table-arn'
+      Name: !Sub 'medislot-${Environment}-doctor-slots-table-arn'
 
   SeatsTableName:
     Value: !Ref SeatsTable

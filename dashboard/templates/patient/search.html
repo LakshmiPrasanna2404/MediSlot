@@ -10,7 +10,7 @@
 
 <section class="card filters">
   <form method="get" class="form grid-4">
-    <label>Name starts with <input name="name" value="{{ filters.name }}" maxlength="120" placeholder="Anil"></label>
+    <label>First or last name <input name="name" value="{{ filters.name }}" maxlength="120" placeholder="Anil"></label>
     <label>Hospital starts with <input name="hospital" value="{{ filters.hospital }}" maxlength="200" placeholder="Apollo"></label>
     <label>Specialisation
       <select name="specialisation">
@@ -34,9 +34,9 @@
   {% for d in result.doctors %}
     <a class="doctor-card" href="{{ url_for('patient.doctor', doctor_id=d.doctor_id) }}">
       {% if d.photo_url %}<img src="{{ d.photo_url }}" alt="" class="avatar small" onerror="this.style.display='none'">
-      {% else %}<span class="avatar small" aria-hidden="true">{{ d.full_name|initials }}</span>{% endif %}
+      {% else %}<span class="avatar small" aria-hidden="true">{{ d|person_name|initials }}</span>{% endif %}
       <span class="doctor-main">
-        <span class="doctor-name">{{ d.full_name }}</span>
+        <span class="doctor-name">{{ d|person_name }}</span>
         <span class="item-meta">
           {% if d.specialisation %}<span class="chip chip-accent">{{ d.specialisation }}</span>{% else %}<span>Specialisation not set</span>{% endif %}
           {% if d.years_experience is not none %}<span>{{ icon('briefcase', 14) }}{{ d.years_experience }} yrs experience</span>{% endif %}

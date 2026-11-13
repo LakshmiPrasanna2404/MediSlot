@@ -12,10 +12,11 @@ the browser).
 
 import uuid
 
+import requests
 from flask import Flask, g, render_template, request
 from flask_session import Session
 
-from . import settings
+from . import settings, weblog
 from .api_client import ApiError
 from .security import init_csrf
 
@@ -44,6 +45,8 @@ def create_app(test_config=None):
         # each call, so web, API Gateway and Lambda logs share one ID.
         g.correlation_id = request.headers.get("X-Correlation-Id") or f"web-{uuid.uuid4()}"
 
+    weblog.configure(app)
+
     @app.after_request
     def security_headers(response):
         response.headers.setdefault("X-Content-Type-Options", "nosniff")
@@ -55,6 +58,12 @@ def create_app(test_config=None):
     @app.errorhandler(ApiError)
     def api_error(exc):
         return render_template("error.html", status=exc.status, message=exc.message), 502 if exc.status >= 500 else exc.status
+
+    @app.errorhandler(requests.RequestException)
+    def api_unreachable(exc):
+        weblog.error("api unreachable", error=type(exc).__name__, detail=str(exc)[:200])
+        message = "The MediSlot service could not be reached. Please try again in a moment."
+        return render_template("error.html", status=503, message=message), 503
 
     @app.errorhandler(404)
     def not_found(_exc):

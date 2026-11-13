@@ -22,7 +22,7 @@ from datetime import timedelta
 
 import pymysql
 
-from medislot_common import config, db, profiles, slots
+from medislot_common import config, db, logs, profiles, slots
 from medislot_common.http import APIError, api_handler, identity, parse_body, path_param
 from medislot_common.validation import clock, integer, iso_date, reject_unknown, text
 
@@ -36,10 +36,12 @@ def _doctor(cur, event):
 
 def _sync(doctor_id):
     with db.connection().cursor() as cur:
-        return slots.sync_from_database(
+        summary = slots.sync_from_database(
             cur, config.table("SLOTS_TABLE"), doctor_id, slots.now_utc(),
             config.config_int("slots/booking-window-days"),
         )
+    logs.info("slots synced", **summary)
+    return summary
 
 
 def _minutes(value):
@@ -94,8 +96,7 @@ def get_availability(event):
             """SELECT ap.availability_id, ap.consultation_type_id, ct.name AS consultation_type_name,
                       ct.duration_minutes, ap.day_of_week, ap.start_time, ap.end_time
                FROM availability_patterns ap
-               JOIN consultation_types ct
-                 ON ct.doctor_id = ap.doctor_id AND ct.consultation_type_id = ap.consultation_type_id
+               JOIN consultation_types ct ON ct.consultation_type_id = ap.consultation_type_id
                WHERE ap.doctor_id = %s AND ap.is_active = 1
                ORDER BY ap.day_of_week, ap.start_time""",
             (doctor["doctor_id"],),
@@ -109,7 +110,10 @@ def replace_availability(event):
     with db.transaction() as cur:
         doctor = _doctor(cur, event)
         cur.execute(
-            "SELECT consultation_type_id, duration_minutes FROM consultation_types WHERE doctor_id = %s AND is_active = 1",
+            """SELECT dct.consultation_type_id, ct.duration_minutes
+               FROM doctor_consultation_types dct
+               JOIN consultation_types ct ON ct.consultation_type_id = dct.consultation_type_id
+               WHERE dct.doctor_id = %s AND dct.is_active = 1""",
             (doctor["doctor_id"],),
         )
         types = {row["consultation_type_id"]: row for row in cur.fetchall()}
@@ -129,6 +133,9 @@ def replace_availability(event):
                     for p in patterns
                 ],
             )
+    logs.info("weekly availability saved", doctorId=doctor["doctor_id"], patterns=len(patterns),
+              days=sorted({p["day_of_week"] for p in patterns}),
+              consultationTypeIds=sorted({p["consultation_type_id"] for p in patterns}))
     return 200, {"patterns_saved": len(patterns), "slot_sync": _sync(doctor["doctor_id"])}
 
 
@@ -162,6 +169,7 @@ def create_blackout(event):
         except pymysql.err.IntegrityError:
             raise APIError(409, "That date is already a blackout date") from None
         blackout_id = cur.lastrowid
+    logs.info("blackout date added", doctorId=doctor["doctor_id"], blackoutId=blackout_id, date=day)
     return 201, {
         "blackout": {"blackout_id": blackout_id, "date": day, "reason": reason},
         "slot_sync": _sync(doctor["doctor_id"]),
@@ -178,6 +186,7 @@ def delete_blackout(event):
         )
         if cur.rowcount == 0:
             raise APIError(404, "Blackout date not found")
+    logs.info("blackout date removed", doctorId=doctor["doctor_id"], blackoutId=blackout_id)
     return 200, {"message": "Blackout date removed", "slot_sync": _sync(doctor["doctor_id"])}
 
 

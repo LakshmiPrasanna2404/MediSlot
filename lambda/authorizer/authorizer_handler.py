@@ -67,7 +67,7 @@ def policy(principal_id, effect, method_arn, context=None):
 def reject(reason):
     """API Gateway turns this exact exception message into 401 Unauthorized."""
     logs.metric("TokenValidationRejections", Reason=reason)
-    logs.info("token rejected", reason=reason)
+    logs.warning("token rejected", reason=reason)
     raise Exception("Unauthorized")  # noqa: TRY002 - the message is the API Gateway contract
 
 
@@ -115,10 +115,12 @@ def lambda_handler(event, context):
         reject("revoked")
 
     path = path_from_method_arn(method_arn)
+    logs.set_context(userId=claims["sub"], role=claims["role"], path=path)
     if claims["role"] not in allowed_roles(path):
         logs.metric("TokenValidationRejections", Reason="wrong_role")
-        logs.info("role not allowed on route", role=claims["role"], path=path)
+        logs.warning("role not allowed on route", allowedRoles=sorted(allowed_roles(path)))
         return policy(claims["sub"], "Deny", method_arn)
+    logs.info("token accepted", jti=claims["jti"], expiresAt=claims["exp"])
 
     return policy(
         claims["sub"],

@@ -610,13 +610,20 @@ Resources:
               type: 'object'
               additionalProperties: false
               required:
-                - 'full_name'
+                - 'first_name'
+                - 'last_name'
                 - 'email'
                 - 'password'
                 - 'licence_number'
               properties:
-                full_name:
+                first_name:
                   type: 'string'
+                  minLength: 1
+                  maxLength: 60
+                last_name:
+                  type: 'string'
+                  minLength: 1
+                  maxLength: 60
                 email:
                   type: 'string'
                 password:
@@ -642,12 +649,19 @@ Resources:
               type: 'object'
               additionalProperties: false
               required:
-                - 'full_name'
+                - 'first_name'
+                - 'last_name'
                 - 'email'
                 - 'password'
               properties:
-                full_name:
+                first_name:
                   type: 'string'
+                  minLength: 1
+                  maxLength: 60
+                last_name:
+                  type: 'string'
+                  minLength: 1
+                  maxLength: 60
                 email:
                   type: 'string'
                 password:
@@ -670,8 +684,14 @@ Resources:
               type: 'object'
               additionalProperties: false
               properties:
-                full_name:
+                first_name:
                   type: 'string'
+                  minLength: 1
+                  maxLength: 60
+                last_name:
+                  type: 'string'
+                  minLength: 1
+                  maxLength: 60
                 licence_number:
                   type: 'string'
                 specialisation:
@@ -693,8 +713,14 @@ Resources:
               type: 'object'
               additionalProperties: false
               properties:
-                full_name:
+                first_name:
                   type: 'string'
+                  minLength: 1
+                  maxLength: 60
+                last_name:
+                  type: 'string'
+                  minLength: 1
+                  maxLength: 60
                 date_of_birth:
                   type: 'string'
                 gender:
@@ -725,9 +751,11 @@ Resources:
               type: 'object'
               additionalProperties: false
               required:
-                - 'name'
                 - 'fee'
               properties:
+                consultation_type_id:
+                  type: 'integer'
+                  minimum: 1
                 name:
                   type: 'string'
                 description:

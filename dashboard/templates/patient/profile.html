@@ -13,7 +13,8 @@
     <fieldset>
       <legend>Personal details</legend>
       <div class="form grid-2">
-        <label>Full name <input name="full_name" value="{{ profile.full_name }}" required maxlength="120" autocomplete="name"></label>
+        <label>First name <input name="first_name" value="{{ profile.first_name }}" required maxlength="60" autocomplete="given-name"></label>
+        <label>Last name <input name="last_name" value="{{ profile.last_name }}" required maxlength="60" autocomplete="family-name"></label>
         <label>Email <input value="{{ profile.email }}" disabled>
           <small>Your login email can't be changed here.</small></label>
         <label>Date of birth <input type="date" name="date_of_birth" value="{{ profile.date_of_birth or '' }}" autocomplete="bday"></label>

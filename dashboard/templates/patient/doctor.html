@@ -1,13 +1,13 @@
 {% extends "base.html" %}
-{% block title %}{{ doctor.full_name }} · MediSlot{% endblock %}
+{% block title %}{{ doctor|person_name }} · MediSlot{% endblock %}
 {% block content %}
 <a class="back-link" href="{{ url_for('patient.search') }}">{{ icon('arrow-left', 16) }}Back to search</a>
 
 <section class="card doctor-hero">
   {% if doctor.photo_url %}<img src="{{ doctor.photo_url }}" alt="" class="avatar md" onerror="this.style.display='none'">
-  {% else %}<span class="avatar md" aria-hidden="true">{{ doctor.full_name|initials }}</span>{% endif %}
+  {% else %}<span class="avatar md" aria-hidden="true">{{ doctor|person_name|initials }}</span>{% endif %}
   <div class="item-main">
-    <h1>{{ doctor.full_name }}</h1>
+    <h1>{{ doctor|person_name }}</h1>
     <div>{% if doctor.specialisation %}<span class="chip chip-accent">{{ doctor.specialisation }}</span>{% endif %}</div>
     <ul class="facts">
       {% if doctor.hospital_name %}<li>{{ icon('hospital', 17) }}<span><small>Hospital</small>{{ doctor.hospital_name }}{% if doctor.hospital_address %}, {{ doctor.hospital_address }}{% endif %}{% if doctor.city %}, {{ doctor.city }}{% endif %}</span></li>{% endif %}

@@ -2,12 +2,13 @@
 
 Triggered daily by EventBridge Scheduler. Rolls the booking window forward:
 for every doctor with active weekly patterns it creates any missing slot for
-local today .. today + N - 1 (N = SSM slots/booking-window-days, 30), skips
+local today .. today + N - 1 (N = the BookingWindowDays parameter, 30), skips
 blackout dates, and removes future OPEN slots nobody holds a seat in that no
 longer match a pattern.
 
-Safe to run twice: slotId is deterministic and every write is a conditional
-put (attribute_not_exists), so a second run for the same date creates nothing.
+Safe to run twice: the table key is (doctorId, startTime) and every create is
+a conditional put (attribute_not_exists), so a second run for the same date
+creates nothing and a doctor can never get two slots at the same time.
 
 Event:
     {}                        all doctors (the daily schedule sends this)
@@ -39,9 +40,11 @@ def lambda_handler(event, context):
     now = slots.now_utc()
     table = config.table("SLOTS_TABLE")
 
-    totals = {"doctors": 0, "created": 0, "alreadyExisted": 0, "removed": 0, "keptBecauseBooked": 0, "failed": []}
+    totals = {"doctors": 0, "created": 0, "updated": 0, "alreadyExisted": 0, "removed": 0, "keptBecauseBooked": 0,
+              "failed": []}
     with db.connection().cursor() as cursor:
         doctor_ids = doctors_to_process(cursor, event)
+        logs.info("materialiser started", doctors=len(doctor_ids), windowDays=days, onlyDoctor=event.get("doctorId"))
         for doctor_id in doctor_ids:
             try:
                 summary = slots.sync_from_database(cursor, table, doctor_id, now, days)
@@ -51,6 +54,7 @@ def lambda_handler(event, context):
                 continue
             totals["doctors"] += 1
             totals["created"] += summary["created"]
+            totals["updated"] += summary["updated"]
             totals["alreadyExisted"] += summary["alreadyExisted"]
             totals["removed"] += summary["removed"]
             totals["keptBecauseBooked"] += len(summary["keptBecauseBooked"])

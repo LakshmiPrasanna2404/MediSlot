@@ -12,21 +12,21 @@ Filters (any combination, all optional):
 Matching is case-insensitive through the utf8mb4_0900_ai_ci collation, and
 every filter is written so MySQL can use an index (prefix LIKE, equality).
 docs/data-model.md maps each filter combination to the index it uses.
-Pagination: page (from 1) and page_size (SSM default and maximum).
+Pagination: page (from 1) and page_size (default and maximum are app stack parameters).
 """
 
 import os
 
-from medislot_common import config, db
+from medislot_common import config, db, logs
 from medislot_common.http import APIError, api_handler, identity, path_param, query
 from medislot_common.validation import integer, text, uuid_value
 
 SEARCH_SQL = """
-    SELECT d.doctor_id, u.full_name, s.name AS specialisation,
+    SELECT d.doctor_id, u.first_name, u.last_name, s.name AS specialisation,
            h.name AS hospital_name, h.address AS hospital_address, h.city,
            d.years_experience, d.qualifications, d.languages, d.profile_photo_s3_key,
-           (SELECT MIN(ct.fee) FROM consultation_types ct
-             WHERE ct.doctor_id = d.doctor_id AND ct.is_active = 1) AS fee_from
+           (SELECT MIN(dct.fee) FROM doctor_consultation_types dct
+             WHERE dct.doctor_id = d.doctor_id AND dct.is_active = 1) AS fee_from
     FROM users u
     JOIN doctors d ON d.user_id = u.user_id
     LEFT JOIN specialisations s ON s.specialisation_id = d.specialisation_id
@@ -59,8 +59,10 @@ def build_search(params, page, page_size):
     specialisation = text(params.get("specialisation"), "specialisation", 100)
     city = text(params.get("city"), "city", 100)
     if name:
-        clauses.append("u.full_name LIKE %s")
-        values.append(_like_prefix(name))
+        # The whole name starts with what was typed ("Anil", "Anil Ku"), or the
+        # last name does ("Kumar").
+        clauses.append("(CONCAT_WS(' ', u.first_name, u.last_name) LIKE %s OR u.last_name LIKE %s)")
+        values.extend([_like_prefix(name), _like_prefix(name)])
     if hospital:
         clauses.append("h.name LIKE %s")
         values.append(_like_prefix(hospital))
@@ -70,7 +72,7 @@ def build_search(params, page, page_size):
     if city:
         clauses.append("h.city = %s")
         values.append(city)
-    sql = SEARCH_SQL + " WHERE " + " AND ".join(clauses) + " ORDER BY u.full_name, d.doctor_id LIMIT %s OFFSET %s"
+    sql = SEARCH_SQL + " WHERE " + " AND ".join(clauses) + " ORDER BY u.first_name, u.last_name, u.user_id LIMIT %s OFFSET %s"
     # One extra row tells us whether another page exists.
     values.extend([page_size + 1, (page - 1) * page_size])
     return sql, values
@@ -93,6 +95,8 @@ def search(event):
     for row in rows[:page_size]:
         row["photo_url"] = _photo_url(row.pop("profile_photo_s3_key"))
         doctors.append(row)
+    logs.info("doctor search", filters={k: params[k] for k in ("name", "hospital", "specialisation", "city") if params.get(k)},
+              page=page, pageSize=page_size, results=len(doctors), hasMore=has_more)
     return 200, {"doctors": doctors, "page": page, "page_size": page_size, "has_more": has_more}
 
 
@@ -101,7 +105,7 @@ def public_profile(event):
     doctor_id = uuid_value(path_param(event, "doctorId"), "doctorId")
     with db.connection().cursor() as cur:
         cur.execute(
-            """SELECT d.doctor_id, u.full_name, s.name AS specialisation,
+            """SELECT d.doctor_id, u.first_name, u.last_name, s.name AS specialisation,
                       h.name AS hospital_name, h.address AS hospital_address, h.city,
                       d.years_experience, d.qualifications, d.languages, d.timezone,
                       d.profile_photo_s3_key
@@ -116,13 +120,18 @@ def public_profile(event):
         if not doctor:
             raise APIError(404, "Doctor not found")
         cur.execute(
-            """SELECT consultation_type_id, name, description, duration_minutes, capacity, fee
-               FROM consultation_types WHERE doctor_id = %s AND is_active = 1
-               ORDER BY duration_minutes, consultation_type_id""",
+            """SELECT dct.consultation_type_id, ct.name, dct.description, ct.duration_minutes,
+                      dct.capacity, dct.fee
+               FROM doctor_consultation_types dct
+               JOIN consultation_types ct ON ct.consultation_type_id = dct.consultation_type_id
+               WHERE dct.doctor_id = %s AND dct.is_active = 1
+               ORDER BY ct.duration_minutes, dct.consultation_type_id""",
             (doctor_id,),
         )
         doctor["consultation_types"] = cur.fetchall()
     doctor["photo_url"] = _photo_url(doctor.pop("profile_photo_s3_key"))
+    logs.info("doctor profile viewed", doctorId=doctor_id, consultationTypes=len(doctor["consultation_types"]),
+              hasPhoto=doctor["photo_url"] is not None)
     return 200, {"doctor": doctor}
 
 

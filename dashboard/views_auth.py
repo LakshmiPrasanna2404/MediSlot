@@ -1,17 +1,18 @@
 """Landing page, login, registration and logout for both roles."""
 
-from flask import Blueprint, flash, redirect, render_template, request, session, url_for
+from flask import Blueprint, current_app, flash, redirect, render_template, request, session, url_for
 
-from . import api_client
+from . import api_client, weblog
 from .api_client import ApiError
+from .formatting import person_name
 
 bp = Blueprint("auth", __name__)
 
 PORTAL = {"doctor": "doctor.schedule", "patient": "patient.search"}
 
-DOCTOR_FIELDS = ["full_name", "email", "password", "licence_number", "specialisation", "hospital_name",
+DOCTOR_FIELDS = ["first_name", "last_name", "email", "password", "licence_number", "specialisation", "hospital_name",
                  "hospital_address", "hospital_city", "years_experience", "qualifications", "languages", "timezone"]
-PATIENT_FIELDS = ["full_name", "email", "password", "date_of_birth", "gender", "phone", "address", "city",
+PATIENT_FIELDS = ["first_name", "last_name", "email", "password", "date_of_birth", "gender", "phone", "address", "city",
                   "emergency_contact_name", "emergency_contact_phone"]
 
 
@@ -40,16 +41,23 @@ def _login(role):
                 {"email": request.form.get("email", ""), "password": request.form.get("password", "")},
             )
         except ApiError as exc:
+            weblog.warning("login failed", portal=role, apiStatus=exc.status)
             flash(exc.message, "error")
             return render_template("login.html", role=role, email=request.form.get("email", "")), exc.status
         session.clear()
         api_client.store_tokens(tokens)
-        session["name"] = tokens["user"]["full_name"]
+        session["name"] = person_name(tokens["user"])
         session["user_id"] = tokens["user"]["user_id"]
         if session["role"] != role:  # never expected: the API issues the token for this portal
+            weblog.warning("login on the wrong portal", portal=role)
             session.clear()
             flash("Wrong portal for this account.", "error")
             return redirect(url_for("auth.landing"))
+        # A new session id after login, so an id set before login cannot be reused.
+        regenerate = getattr(current_app.session_interface, "regenerate", None)
+        if regenerate:
+            regenerate(session)
+        weblog.info("login succeeded", portal=role)
         return redirect(url_for(PORTAL[role]))
     return render_template("login.html", role=role)
 
@@ -60,11 +68,13 @@ def _register(role):
         try:
             api_client.public_call("POST", f"/auth/{role}s/register", body)
         except ApiError as exc:
+            weblog.warning("registration failed", portal=role, apiStatus=exc.status, apiError=exc.message)
             message = exc.message
             if isinstance(exc.details, dict) and exc.details.get("allowed"):
                 message += ": choose one of " + ", ".join(exc.details["allowed"])
             flash(message, "error")
             return render_template(f"register_{role}.html", role=role, form=request.form), exc.status
+        weblog.info("registration succeeded", portal=role)
         flash("Account created. Please log in.", "success")
         return redirect(url_for(f"auth.{role}_login"))
     return render_template(f"register_{role}.html", role=role, form={})
@@ -92,6 +102,7 @@ def patient_register():
 
 @bp.post("/logout")
 def logout():
+    weblog.info("logout")
     api_client.logout()
     flash("You have been logged out.", "success")
     return redirect(url_for("auth.landing"))

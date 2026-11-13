@@ -5,7 +5,7 @@ from .http import APIError
 from .validation import integer, text, timezone_name
 
 DOCTOR_PROFILE_SQL = """
-    SELECT d.doctor_id, d.user_id, u.full_name, u.email, u.is_active,
+    SELECT d.doctor_id, d.user_id, u.first_name, u.last_name, u.email, u.is_active,
            d.licence_number, d.years_experience, d.qualifications, d.languages,
            d.timezone, d.profile_photo_s3_key,
            d.specialisation_id, s.name AS specialisation,
@@ -18,8 +18,28 @@ DOCTOR_PROFILE_SQL = """
     LEFT JOIN hospitals h ON h.hospital_id = d.hospital_id
 """
 
+NAME_FIELDS = ("first_name", "last_name")
+
+
+def name_values(body, required):
+    """Validate first_name and last_name (each 1-60 characters) into users columns.
+
+    Registration needs both (required=True); a profile update may send either.
+    """
+    values = {}
+    for field in NAME_FIELDS:
+        if required or field in body:
+            values[field] = text(body.get(field), field, 60, required=True)
+    return values
+
+
+def display_name(row):
+    """'First Last' for logs and messages; never stored."""
+    return " ".join(part for part in (row.get("first_name"), row.get("last_name")) if part)
+
+
 PATIENT_PROFILE_SQL = """
-    SELECT p.patient_id, p.user_id, u.full_name, u.email, u.is_active,
+    SELECT p.patient_id, p.user_id, u.first_name, u.last_name, u.email, u.is_active,
            p.date_of_birth, p.gender, p.phone, p.address, p.city,
            p.emergency_contact_name, p.emergency_contact_phone,
            p.created_at, p.updated_at

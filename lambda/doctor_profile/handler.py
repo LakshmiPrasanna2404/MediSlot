@@ -18,7 +18,7 @@ from medislot_common.http import APIError, api_handler, identity, parse_body
 from medislot_common.validation import reject_unknown, text
 
 UPDATABLE = {
-    "full_name", "licence_number", "specialisation", "hospital_name", "hospital_address", "hospital_city",
+    "first_name", "last_name", "licence_number", "specialisation", "hospital_name", "hospital_address", "hospital_city",
     "years_experience", "qualifications", "languages", "timezone",
 }
 
@@ -37,7 +37,8 @@ def view(row):
     return {
         "doctor_id": row["doctor_id"],
         "user_id": row["user_id"],
-        "full_name": row["full_name"],
+        "first_name": row["first_name"],
+        "last_name": row["last_name"],
         "email": row["email"],
         "licence_number": row["licence_number"],
         "specialisation_id": row["specialisation_id"],
@@ -81,10 +82,11 @@ def update_profile(event):
             licence = text(body["licence_number"], "licence_number", 50, required=True)
             if licence != current["licence_number"]:
                 raise APIError(400, "licence_number cannot be changed")
-        if "full_name" in body:
+        names = profiles.name_values(body, required=False)
+        if names:
             cur.execute(
-                "UPDATE users SET full_name = %s WHERE user_id = %s",
-                (text(body["full_name"], "full_name", 120, required=True), caller.user_id),
+                f"UPDATE users SET {', '.join(f'{column} = %s' for column in names)} WHERE user_id = %s",
+                (*names.values(), caller.user_id),
             )
         values = profiles.doctor_values(cur, body, creating=False)
         timezone_changed = "timezone" in values and values["timezone"] != current["timezone"]
@@ -103,6 +105,7 @@ def update_profile(event):
                 [*values.values(), current["doctor_id"]],
             )
 
+    logs.info("doctor profile updated", doctorId=current["doctor_id"], fields=sorted(body))
     result = {}
     if timezone_changed:
         with db.connection().cursor() as cur:
@@ -110,7 +113,8 @@ def update_profile(event):
                 cur, config.table("SLOTS_TABLE"), current["doctor_id"], slots.now_utc(),
                 config.config_int("slots/booking-window-days"),
             )
-        logs.info("doctor time zone changed", doctorId=current["doctor_id"], sync=result["slot_sync"])
+        logs.info("doctor time zone changed", doctorId=current["doctor_id"], fromTimezone=current["timezone"],
+                  toTimezone=values["timezone"], slotSync=result["slot_sync"])
     with db.connection().cursor() as cur:
         result["profile"] = view(profiles.require_doctor(cur, caller.user_id))
     return 200, result

@@ -49,6 +49,7 @@ Parameters:
 Resources:
   DashboardInstance:
     Type: AWS::EC2::Instance
+    DependsOn: WebLogGroup
     Properties:
       ImageId: !Ref LatestAmiId
       InstanceType: !Ref InstanceType
@@ -104,9 +105,46 @@ Resources:
           echo "medislot web bootstrap start: $(date -u +%FT%TZ)"
 
           dnf install -y python3.12 python3.12-pip unzip
+          # Log shipping is useful but not essential: if it cannot be installed
+          # the web app still starts.
+          dnf install -y amazon-cloudwatch-agent logrotate || echo "warning: CloudWatch agent not installed"
 
           id medislot >/dev/null 2>&1 || useradd --system --home-dir /opt/medislot --shell /sbin/nologin medislot
           install -d -o medislot -g medislot /opt/medislot /var/lib/medislot /var/lib/medislot/sessions
+          install -d -m 0755 -o medislot -g medislot /var/log/medislot
+
+          # Ship the app log and this boot log to CloudWatch Logs
+          # (/medislot/<env>/web, one stream per instance and file).
+          cat > /etc/logrotate.d/medislot-web <<'ROTATEEOF'
+          /var/log/medislot/web.log {
+              daily
+              rotate 7
+              compress
+              missingok
+              notifempty
+              copytruncate
+          }
+          ROTATEEOF
+          if [ -x /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl ]; then
+            cat > /opt/aws/amazon-cloudwatch-agent/etc/medislot-agent.json <<'AGENTEOF'
+          {
+            "logs": {
+              "logs_collected": {
+                "files": {
+                  "collect_list": [
+                    {"file_path": "/var/log/medislot/web.log", "log_group_name": "/medislot/${Environment}/web",
+                     "log_stream_name": "{instance_id}/web", "timezone": "UTC"},
+                    {"file_path": "/var/log/medislot-web-bootstrap.log", "log_group_name": "/medislot/${Environment}/web",
+                     "log_stream_name": "{instance_id}/bootstrap", "timezone": "UTC"}
+                  ]
+                }
+              }
+            }
+          }
+          AGENTEOF
+            /opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl -a fetch-config -m ec2 -s \
+              -c file:/opt/aws/amazon-cloudwatch-agent/etc/medislot-agent.json || echo "warning: CloudWatch agent did not start"
+          fi
 
           # Session signing key: random, generated on the first boot and kept on
           # the instance's disk, readable only by the app. Never in SSM or in git.
@@ -153,8 +191,11 @@ Resources:
           Group=medislot
           WorkingDirectory=/opt/medislot/app
           EnvironmentFile=/etc/medislot-web.env
-          # Flask's built-in server (threaded); requests are logged to the journal.
+          # Flask's built-in server (threaded). The app writes one JSON line per
+          # request and event; the CloudWatch agent ships this file.
           ExecStart=/opt/medislot/venv/bin/flask --app dashboard.wsgi:app run --host 0.0.0.0 --port 80 --with-threads --no-reload --no-debugger
+          StandardOutput=append:/var/log/medislot/web.log
+          StandardError=append:/var/log/medislot/web.log
           Restart=always
           RestartSec=5
           AmbientCapabilities=CAP_NET_BIND_SERVICE
@@ -177,6 +218,19 @@ Resources:
 
           --==MEDISLOT==--
 
+  # The web app's logs (app requests and events, and the boot script), shipped
+  # by the CloudWatch agent on the instance.
+  WebLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /medislot/${Environment}/web
+      RetentionInDays: 30
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
   # Stable public address; the instance can be replaced without changing it.
   DashboardElasticIp:
     Type: AWS::EC2::EIP
@@ -197,6 +251,10 @@ Resources:
       InstanceId: !Ref DashboardInstance
 
 Outputs:
+  WebLogGroupName:
+    Description: CloudWatch log group of the web app.
+    Value: !Ref WebLogGroup
+
   DashboardUrl:
     Description: Web app address (landing page with Login as Doctor / Login as Patient).
     Value: !Sub http://${DashboardElasticIp}

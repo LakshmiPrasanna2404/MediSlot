@@ -14,7 +14,8 @@
       <fieldset>
         <legend>Your account</legend>
         <div class="form grid-2">
-          <label>Full name <input name="full_name" value="{{ form.get('full_name', '') }}" required maxlength="120" autocomplete="name"></label>
+          <label>First name <input name="first_name" value="{{ form.get('first_name', '') }}" required maxlength="60" autocomplete="given-name"></label>
+          <label>Last name <input name="last_name" value="{{ form.get('last_name', '') }}" required maxlength="60" autocomplete="family-name"></label>
           <label>Email <input type="email" name="email" value="{{ form.get('email', '') }}" required autocomplete="email"></label>
           <label>Password <input type="password" name="password" required minlength="10" autocomplete="new-password">
             <small>At least 10 characters, with a letter and a digit.</small></label>

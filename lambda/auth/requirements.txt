@@ -1,2 +1,0 @@
-bcrypt==5.0.0
-PyMySQL==1.2.3

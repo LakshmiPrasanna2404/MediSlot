@@ -57,6 +57,13 @@ def money(value):
         return "-"
 
 
+def person_name(row, prefix=""):
+    """'First Last' from an API record: {{ doctor|person_name }}, {{ p|person_name('patient_') }}."""
+    row = row or {}
+    parts = (row.get(f"{prefix}first_name"), row.get(f"{prefix}last_name"))
+    return " ".join(str(part) for part in parts if part)
+
+
 def initials(name):
     """Two letters for an avatar: "Dr. Ananya Rao" -> "AR"."""
     words = [w for w in str(name or "").replace(".", " ").split() if w.lower() not in ("dr", "mr", "mrs", "ms")]
@@ -129,7 +136,7 @@ def icon(name, size=18, cls=""):
 
 def register(app):
     app.jinja_env.filters.update(local_time=local_time, local_datetime=local_datetime, long_date=long_date, money=money,
-                                 initials=initials)
+                                 initials=initials, person_name=person_name)
     app.jinja_env.globals.update(
         DAYS=DAYS, SPECIALISATIONS=SPECIALISATIONS, TIMEZONES=TIMEZONES, CONSULTATION_TYPES=CONSULTATION_TYPES, icon=icon
     )

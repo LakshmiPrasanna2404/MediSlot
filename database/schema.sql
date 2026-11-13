@@ -6,12 +6,18 @@
 -- the versioned migrations in database/migrations, which the pipeline applies
 -- through the db-migrate Lambda (tests/unit/test_migrations.py checks that both
 -- produce the same tables).
--- The only column not on the diagram is doctors.timezone: the frozen rules
--- require every doctor to have a home IANA time zone for slot materialisation.
+-- The only column not on the original diagram is doctors.timezone: the frozen
+-- rules require every doctor to have a home IANA time zone for slot
+-- materialisation.
+--
+-- Normalised (V005): consultation_types is the catalogue of the four fixed
+-- types and doctor_consultation_types holds what each doctor sets for a type.
+-- Names (V006): users keeps first_name and last_name; there is no full name.
 
 CREATE TABLE IF NOT EXISTS users (
     user_id        CHAR(36)     NOT NULL,
-    full_name      VARCHAR(120) NOT NULL,
+    first_name     VARCHAR(60)  NOT NULL,
+    last_name      VARCHAR(60)  NOT NULL,
     email          VARCHAR(254) NOT NULL,
     password_hash  VARCHAR(255) NOT NULL,
     role           ENUM('patient', 'doctor') NOT NULL,
@@ -20,7 +26,8 @@ CREATE TABLE IF NOT EXISTS users (
     updated_at     TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (user_id),
     CONSTRAINT uq_users_email UNIQUE (email),
-    CONSTRAINT chk_users_email_nonempty CHECK (CHAR_LENGTH(TRIM(email)) > 0)
+    CONSTRAINT chk_users_email_nonempty CHECK (CHAR_LENGTH(TRIM(email)) > 0),
+    CONSTRAINT chk_users_first_name_nonempty CHECK (CHAR_LENGTH(TRIM(first_name)) > 0)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE IF NOT EXISTS hospitals (
@@ -87,29 +94,41 @@ CREATE TABLE IF NOT EXISTS patients (
         ON DELETE CASCADE ON UPDATE CASCADE
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
+-- The catalogue: the four consultation types of the frozen rule set. Name,
+-- duration and allowed seats belong to the type, not to a doctor.
 CREATE TABLE IF NOT EXISTS consultation_types (
-    consultation_type_id  INT           NOT NULL AUTO_INCREMENT,
+    consultation_type_id  INT          NOT NULL AUTO_INCREMENT,
+    name                  VARCHAR(100) NOT NULL,
+    duration_minutes      INT          NOT NULL,
+    min_capacity          INT          NOT NULL DEFAULT 1,
+    max_capacity          INT          NOT NULL DEFAULT 1,
+    created_at            TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at            TIMESTAMP    NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+    PRIMARY KEY (consultation_type_id),
+    CONSTRAINT uq_consultation_types_name UNIQUE (name),
+    CONSTRAINT chk_consultation_type_duration CHECK (duration_minutes IN (15, 30, 60)),
+    CONSTRAINT chk_consultation_type_capacity CHECK (min_capacity >= 1 AND max_capacity >= min_capacity AND max_capacity <= 10)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
+
+-- What one doctor offers for one type: fee, seats (Health Camp Session 2 to
+-- 10, checked against the catalogue by the Lambda), description, active flag.
+CREATE TABLE IF NOT EXISTS doctor_consultation_types (
     doctor_id             CHAR(36)      NOT NULL,
-    name                  VARCHAR(100)  NOT NULL,
-    description           VARCHAR(255)  NULL,
+    consultation_type_id  INT           NOT NULL,
     fee                   DECIMAL(10,2) NOT NULL,
-    duration_minutes      INT           NOT NULL,
     capacity              INT           NOT NULL DEFAULT 1,
+    description           VARCHAR(255)  NULL,
     is_active             TINYINT(1)    NOT NULL DEFAULT 1,
     created_at            TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at            TIMESTAMP     NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-    PRIMARY KEY (consultation_type_id),
-    CONSTRAINT uq_consultation_types_doctor_type UNIQUE (doctor_id, consultation_type_id),
-    CONSTRAINT fk_consultation_types_doctor FOREIGN KEY (doctor_id) REFERENCES doctors (doctor_id)
+    PRIMARY KEY (doctor_id, consultation_type_id),
+    KEY fk_doctor_consultation_types_type (consultation_type_id),
+    CONSTRAINT fk_doctor_consultation_types_doctor FOREIGN KEY (doctor_id) REFERENCES doctors (doctor_id)
         ON DELETE CASCADE ON UPDATE CASCADE,
-    CONSTRAINT chk_consultation_fee CHECK (fee >= 0),
-    CONSTRAINT chk_consultation_duration CHECK (duration_minutes IN (15, 30, 60)),
-    -- Quick 15 / Standard 30 / Detailed 60 have capacity 1; a Health Camp
-    -- Session is 60 minutes with capacity 2 to 10 (frozen rule set).
-    CONSTRAINT chk_consultation_capacity CHECK (
-        (name = 'Health Camp Session' AND duration_minutes = 60 AND capacity BETWEEN 2 AND 10)
-        OR (name <> 'Health Camp Session' AND capacity = 1)
-    )
+    CONSTRAINT fk_doctor_consultation_types_type FOREIGN KEY (consultation_type_id)
+        REFERENCES consultation_types (consultation_type_id) ON DELETE RESTRICT ON UPDATE CASCADE,
+    CONSTRAINT chk_doctor_consultation_fee CHECK (fee >= 0),
+    CONSTRAINT chk_doctor_consultation_capacity CHECK (capacity BETWEEN 1 AND 10)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 CREATE TABLE IF NOT EXISTS availability_patterns (
@@ -123,9 +142,9 @@ CREATE TABLE IF NOT EXISTS availability_patterns (
     created_at            TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at            TIMESTAMP        NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
     PRIMARY KEY (availability_id),
-    CONSTRAINT fk_availability_doctor_consultation
+    CONSTRAINT fk_availability_doctor_type
         FOREIGN KEY (doctor_id, consultation_type_id)
-        REFERENCES consultation_types (doctor_id, consultation_type_id)
+        REFERENCES doctor_consultation_types (doctor_id, consultation_type_id)
         ON DELETE CASCADE ON UPDATE CASCADE,
     CONSTRAINT chk_availability_day CHECK (day_of_week BETWEEN 1 AND 7),
     CONSTRAINT chk_availability_time CHECK (end_time > start_time)
@@ -174,9 +193,9 @@ CREATE TABLE IF NOT EXISTS appointments (
     CONSTRAINT uq_patient_idempotency UNIQUE (patient_id, idempotency_key),
     CONSTRAINT fk_appointments_patient FOREIGN KEY (patient_id) REFERENCES patients (patient_id)
         ON DELETE RESTRICT ON UPDATE CASCADE,
-    CONSTRAINT fk_appointments_doctor_consultation
+    CONSTRAINT fk_appointments_doctor_type
         FOREIGN KEY (doctor_id, consultation_type_id)
-        REFERENCES consultation_types (doctor_id, consultation_type_id)
+        REFERENCES doctor_consultation_types (doctor_id, consultation_type_id)
         ON DELETE RESTRICT ON UPDATE CASCADE,
     CONSTRAINT chk_appointment_time CHECK (slot_end_utc > slot_start_utc),
     CONSTRAINT chk_appointment_fee CHECK (consultation_fee >= 0),
@@ -208,10 +227,10 @@ CREATE TABLE IF NOT EXISTS refund_ledger (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_0900_ai_ci;
 
 -- Secondary indexes
--- Doctor search by name: WHERE u.role = 'doctor' AND u.full_name LIKE 'prefix%'
--- ORDER BY u.full_name. Equality on role, then a range on full_name, and the
--- index order also serves the ORDER BY.
-CREATE INDEX idx_users_role_full_name ON users (role, full_name);
+-- Doctor search: WHERE u.role = 'doctor' ... ORDER BY first_name, last_name.
+-- Equality on role, and the index order serves the ORDER BY, so a page is read
+-- in order and the scan stops once the page is full.
+CREATE INDEX idx_users_role_names ON users (role, first_name, last_name);
 
 -- Doctor search by city (exact) and hospital name (prefix). City alone and
 -- city + hospital both use this index. Hospital name alone uses the leading
@@ -221,9 +240,6 @@ CREATE INDEX idx_hospitals_city_name ON hospitals (city, name);
 -- Doctor search by specialisation, optionally narrowed by hospital.
 -- (hospital_id alone is covered by the index InnoDB creates for its FK.)
 CREATE INDEX idx_doctors_specialisation_hospital ON doctors (specialisation_id, hospital_id);
-
--- Public profile and booking: a doctor's active consultation types.
-CREATE INDEX idx_consultation_types_doctor_active ON consultation_types (doctor_id, is_active);
 
 -- Materialiser and availability editor: a doctor's active weekly patterns.
 CREATE INDEX idx_availability_doctor_active_day ON availability_patterns (doctor_id, is_active, day_of_week);

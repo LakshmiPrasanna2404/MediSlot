@@ -169,8 +169,7 @@ Resources:
                   - dynamodb:PutItem
                   - dynamodb:DeleteItem
                 Resource:
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots/index/*
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-doctor-slots
               - Sid: SignPhotoDownloads
                 Effect: Allow
                 Action:
@@ -251,8 +250,7 @@ Resources:
                   - dynamodb:PutItem
                   - dynamodb:DeleteItem
                 Resource:
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots/index/*
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-doctor-slots
 
   # M3 - Schedule Lambda: day and week view
   ScheduleRole:
@@ -280,8 +278,7 @@ Resources:
                 Action:
                   - dynamodb:Query
                 Resource:
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots/index/*
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-doctor-slots
 
   # M3 - Slot Materialiser (daily job)
   SlotMaterialiserRole:
@@ -311,8 +308,7 @@ Resources:
                   - dynamodb:PutItem
                   - dynamodb:DeleteItem
                 Resource:
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots/index/*
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-doctor-slots
 
   # M4 - Patient Profile Lambda
   PatientProfileRole:
@@ -396,8 +392,7 @@ Resources:
                 Action:
                   - dynamodb:Query
                 Resource:
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots/index/*
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-doctor-slots
 
   # M2 - Schema migrations, run by the pipeline inside the VPC
   DbMigrateRole:
@@ -444,7 +439,7 @@ Resources:
                   - dynamodb:UpdateItem
                   - dynamodb:ConditionCheckItem
                 Resource:
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-doctor-slots
               - Sid: SeatItems
                 Effect: Allow
                 Action:
@@ -519,7 +514,7 @@ Resources:
                   - dynamodb:GetItem
                   - dynamodb:UpdateItem
                 Resource:
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-doctor-slots
               - Sid: SeatItems
                 Effect: Allow
                 Action:
@@ -612,7 +607,7 @@ Resources:
                   - dynamodb:GetItem
                   - dynamodb:UpdateItem
                 Resource:
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-doctor-slots
               - Sid: StartWorkflow
                 Effect: Allow
                 Action:
@@ -686,7 +681,7 @@ Resources:
                   - dynamodb:GetItem
                   - dynamodb:UpdateItem
                 Resource:
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-doctor-slots
               - Sid: Offers
                 Effect: Allow
                 Action:
@@ -735,7 +730,7 @@ Resources:
                   - dynamodb:GetItem
                   - dynamodb:UpdateItem
                 Resource:
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-doctor-slots
               - Sid: NextInLine
                 Effect: Allow
                 Action:
@@ -844,7 +839,7 @@ Resources:
                 Action:
                   - dynamodb:UpdateItem
                 Resource:
-                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-slots
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-doctor-slots
               - Sid: RemoveEntry
                 Effect: Allow
                 Action:
@@ -987,7 +982,7 @@ Resources:
               Service: ec2.amazonaws.com
             Action: sts:AssumeRole
       # Session Manager instead of SSH: no port 22, no key pairs, every session
-      # is logged by IAM identity. Used to read the web app's journal.
+      # is logged by IAM identity. The web app's own logs go to CloudWatch Logs.
       ManagedPolicyArns:
         - !Sub arn:${AWS::Partition}:iam::aws:policy/AmazonSSMManagedInstanceCore
       Policies:
@@ -1003,6 +998,17 @@ Resources:
                   - ${BucketArn}/medislot/${Environment}/dashboard/*
                   - BucketArn:
                       Fn::ImportValue: !Sub medislot-${Environment}-artifact-bucket-arn
+              # The CloudWatch agent on the instance ships the app log and the
+              # boot log to this one log group (created by the dashboard stack).
+              - Sid: ShipWebLogs
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource:
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/medislot/${Environment}/web
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/medislot/${Environment}/web:*
 
   DashboardInstanceProfile:
     Type: AWS::IAM::InstanceProfile
@@ -1122,6 +1128,7 @@ Resources:
                 Resource:
                   - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/lambda/medislot-${Environment}-*
                   - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/apigateway/medislot-${Environment}-*
+                  - !Sub arn:${AWS::Partition}:logs:${AWS::Region}:${AWS::AccountId}:log-group:/medislot/${Environment}/*
               - Sid: LogsReadOnly
                 Effect: Allow
                 Action: logs:Describe*

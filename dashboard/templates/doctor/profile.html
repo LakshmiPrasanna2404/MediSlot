@@ -12,9 +12,9 @@
     {% if profile.photo_url %}
       <img src="{{ profile.photo_url }}" alt="Profile photo" class="avatar" onerror="this.style.display='none'">
     {% else %}
-      <div class="avatar" aria-hidden="true">{{ profile.full_name|initials }}</div>
+      <div class="avatar" aria-hidden="true">{{ profile|person_name|initials }}</div>
     {% endif %}
-    <h2>{{ profile.full_name }}</h2>
+    <h2>{{ profile|person_name }}</h2>
     {% if profile.specialisation %}<span class="chip chip-accent">{{ profile.specialisation }}</span>{% endif %}
 
     <form id="photo-form" class="form photo-form">
@@ -38,7 +38,8 @@
       <fieldset>
         <legend>About you</legend>
         <div class="form grid-2">
-          <label>Full name <input name="full_name" value="{{ profile.full_name }}" required maxlength="120"></label>
+          <label>First name <input name="first_name" value="{{ profile.first_name }}" required maxlength="60" autocomplete="given-name"></label>
+          <label>Last name <input name="last_name" value="{{ profile.last_name }}" required maxlength="60" autocomplete="family-name"></label>
           <label>Specialisation
             <select name="specialisation">
               {% if not profile.specialisation %}<option value="">Choose…</option>{% endif %}
