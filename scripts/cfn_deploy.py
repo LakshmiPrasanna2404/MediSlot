@@ -148,11 +148,34 @@ def print_changes(change_set):
         print(f"  {rc['Action']:<8} {rc['LogicalResourceId']:<45} {rc['ResourceType']:<38} {rc.get('Replacement', '-')}")
 
 
+STARTED = ("CREATE_IN_PROGRESS", "UPDATE_IN_PROGRESS", "IMPORT_IN_PROGRESS")
+
+
 def print_failures(cfn, stack):
-    events = cfn.describe_stack_events(StackName=stack)["StackEvents"][:40]
-    for event in reversed(events):
-        if "FAILED" in event["ResourceStatus"]:
-            print(f"::error::{event['LogicalResourceId']} {event['ResourceStatus']}: {event.get('ResourceStatusReason', '')}")
+    """Every failed resource of the latest operation, the first one (the cause) first.
+
+    A large update that fails rolls back many resources, and those rollback
+    events push the cause far down the list, so this reads back to the event
+    that started the operation instead of a fixed number of events."""
+    failures = []
+    request = {"StackName": stack}
+    for _ in range(20):  # at most 20 pages of events
+        page = cfn.describe_stack_events(**request)
+        started = False
+        for event in page["StackEvents"]:
+            if (event.get("ResourceType") == "AWS::CloudFormation::Stack" and event["ResourceStatus"] in STARTED
+                    and event.get("ResourceStatusReason") == "User Initiated"):
+                started = True
+                break
+            if "FAILED" in event["ResourceStatus"]:
+                failures.append(event)
+        if started or "NextToken" not in page:
+            break
+        request["NextToken"] = page["NextToken"]
+    for number, event in enumerate(reversed(failures)):
+        label = "cause" if number == 0 else "then"
+        print(f"::error::{label}: {event['LogicalResourceId']} {event['ResourceStatus']}: "
+              f"{event.get('ResourceStatusReason', '')}")
 
 
 def execute(cfn, stack, change_set, change_set_type):

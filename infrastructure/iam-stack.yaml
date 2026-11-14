@@ -1055,6 +1055,12 @@ Resources:
             comment: 'EC2 instance, address and security group writes cannot be scoped to a resource name before the resource exists; they are limited to this region. CloudWatch Logs delivery calls for HTTP API access logs take no resource ARN.'
           - id: CKV_AWS_109
             comment: 'logs:PutResourcePolicy lets API Gateway deliver HTTP API access logs; the action takes no resource ARN.'
+      # apigateway:TagResource and UntagResource are newer than cfn-lint's list
+      # of IAM actions; API Gateway asks for them when it tags an HTTP API stage.
+      cfn-lint:
+        config:
+          ignore_checks:
+            - W3037
     Properties:
       RoleName: !Sub medislot-${Environment}-cloudformation-execution-role
       Description: Service role CloudFormation uses for the MediSlot config, auth, app, jobs, monitoring, dashboard and api stacks
@@ -1212,6 +1218,9 @@ Resources:
                   - apigateway:PUT
                   - apigateway:PATCH
                   - apigateway:DELETE
+                  # Tags on an HTTP API stage are set with these actions.
+                  - apigateway:TagResource
+                  - apigateway:UntagResource
                 Resource:
                   - !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis
                   - !Sub arn:${AWS::Partition}:apigateway:${AWS::Region}::/restapis/*
