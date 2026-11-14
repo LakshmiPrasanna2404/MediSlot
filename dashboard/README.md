@@ -14,7 +14,7 @@ One Flask application on one EC2 instance (`infrastructure/dashboard-stack.yaml`
 ## How it works
 
 - **Pure API client.** No database credentials and no database connection. Every read and write is a call to the
-  MediSlot REST API (`api_client.py`). The instance role can only read its package in S3; it reads nothing from SSM.
+  MediSlot HTTP API (`api_client.py`). The instance role can only read its package in S3; it reads nothing from SSM.
 - **Server-side sessions** (Flask-Session, files under `/var/lib/medislot/sessions`). The JWT access token and the
   refresh token stay on the server; the browser only holds a random session id (HttpOnly, SameSite=Lax).
 - **Route guards** (`security.py`). The role claim of the JWT in the session decides the portal. A patient session on

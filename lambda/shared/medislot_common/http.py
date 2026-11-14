@@ -1,8 +1,11 @@
-"""API Gateway (REST, Lambda proxy) request and response helpers.
+"""API Gateway (HTTP API, Lambda proxy, payload format 2.0) request and response helpers.
 
 The acting user is read ONLY from the Lambda authorizer context
-(requestContext.authorizer). Request bodies, query strings and headers are
-never used to decide who the caller is.
+(requestContext.authorizer.lambda). Request bodies, query strings and headers
+are never used to decide who the caller is.
+
+Events in the REST API format (payload 1.0) are still understood, so requests
+keep working while a deployment switches the API from REST to HTTP.
 """
 
 import base64
@@ -18,7 +21,7 @@ from decimal import Decimal
 
 import pymysql
 
-from . import logs
+from . import logs, schemas
 
 CORRELATION_HEADER = "X-Correlation-Id"
 _CORRELATION_PATTERN = re.compile(r"^[A-Za-z0-9._:-]{8,128}$")
@@ -119,12 +122,21 @@ def path_param(event, name):
     return value
 
 
-def identity(event, required_role=None):
-    """Return the caller as resolved by the Lambda authorizer.
+def authorizer_context(event):
+    """The context map the Lambda authorizer returned for this request.
 
-    API Gateway puts the authorizer's context map at requestContext.authorizer.
+    HTTP API: requestContext.authorizer.lambda. REST API: requestContext.authorizer.
+    Public routes have none.
     """
-    context = (event.get("requestContext") or {}).get("authorizer") or {}
+    authorizer = (event.get("requestContext") or {}).get("authorizer") or {}
+    if "lambda" in authorizer:
+        return authorizer.get("lambda") or {}
+    return authorizer
+
+
+def identity(event, required_role=None):
+    """Return the caller as resolved by the Lambda authorizer."""
+    context = authorizer_context(event)
     user_id = context.get("userId")
     role = context.get("role")
     if not user_id or role not in ("doctor", "patient"):
@@ -139,8 +151,25 @@ def identity(event, required_role=None):
 
 
 def route_key(event):
-    """'GET /doctors/me/consultation-types/{consultationTypeId}' style key."""
+    """'GET /doctors/me/consultation-types/{consultationTypeId}' style key.
+
+    HTTP API events carry it as routeKey; REST API events are rebuilt from the
+    method and the resource.
+    """
+    if event.get("routeKey"):
+        return event["routeKey"]
     return f"{(event.get('httpMethod') or '').upper()} {event.get('resource') or event.get('path') or ''}"
+
+
+def check_body(event, key):
+    """400 'Invalid request body' when a route's body does not match its schema."""
+    schema = schemas.ROUTE_BODIES.get(key)
+    if schema is None:
+        return
+    found = schemas.problems(parse_body(event), schema)
+    if found:
+        logs.warning("request body rejected", problems=found[:10])
+        raise APIError(400, "Invalid request body", found)
 
 
 def _correlation_from(event, context):
@@ -171,7 +200,7 @@ def _short(value, limit=100):
 def _request_fields(event):
     """What the request asked for, for the 'request received' line. Never the body."""
     request = event.get("requestContext") or {}
-    source = request.get("identity") or {}
+    source = request.get("http") or request.get("identity") or {}
     return {
         "pathParameters": {k: _short(v) for k, v in (event.get("pathParameters") or {}).items()} or None,
         "queryParameters": {k: _short(v) for k, v in (event.get("queryStringParameters") or {}).items()} or None,
@@ -185,7 +214,8 @@ def api_handler(routes):
     """Build a Lambda handler that dispatches on 'METHOD /resource'.
 
     Each route function receives (event) and returns (status, payload).
-    Every request writes a 'request received' line (route, caller, path and
+    A route with a body schema (schemas.ROUTE_BODIES) only runs when the body
+    matches it. Every request writes a 'request received' line (route, caller, path and
     query parameters, source IP) and a 'request completed' line (status,
     duration, and the error message for a 4xx). Lines in between, written by
     the route itself, carry the same route, userId and role.
@@ -198,7 +228,7 @@ def api_handler(routes):
         )
         started = time.perf_counter()
         key = route_key(event)
-        caller = (event.get("requestContext") or {}).get("authorizer") or {}
+        caller = authorizer_context(event)
         logs.set_context(route=key, userId=caller.get("userId"), role=caller.get("role"))
         logs.info("request received", **_request_fields(event))
         error_message = None
@@ -206,6 +236,7 @@ def api_handler(routes):
             route = routes.get(key)
             if route is None:
                 raise APIError(404, "Route not found")
+            check_body(event, key)
             status, payload = route(event)
             result = response(status, payload)
         except APIError as exc:

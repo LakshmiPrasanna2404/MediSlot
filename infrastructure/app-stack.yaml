@@ -427,8 +427,8 @@ Resources:
             Fn::Sub: medislot-${Environment}-db-name
           DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/db/username
           DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
-          TOKEN_REVOCATIONS_TABLE: !ImportValue
-            Fn::Sub: medislot-${Environment}-token-revocations-table-name
+          ACTIVE_TOKENS_TABLE: !ImportValue
+            Fn::Sub: medislot-${Environment}-active-tokens-table-name
       Tags:
         - Key: Project
           Value: MediSlot

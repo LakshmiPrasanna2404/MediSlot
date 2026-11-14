@@ -1,8 +1,13 @@
-"""Calls to the MediSlot REST API on behalf of the signed-in user.
+"""Calls to the MediSlot HTTP API on behalf of the signed-in user.
 
 The access and refresh tokens live in the server-side session. When the API
-answers 401 (the 15-minute access token expired), the client rotates the
-refresh token once and retries; if that fails the user is signed out.
+answers 401 (the 15-minute access token expired, or it is no longer on the
+active-tokens list), the client rotates the refresh token once and retries;
+if that fails the user is signed out.
+
+Error bodies: the Lambdas answer {"error": ...}; API Gateway itself answers
+{"message": ...} (for example 403 from the authorizer, 404 for an unknown
+route, 429 when throttled). Both are shown to the user.
 """
 
 import base64
@@ -54,9 +59,11 @@ def _send(method, path, *, json_body=None, params=None, token=None):
         raise
     fields = {"apiMethod": method, "apiPath": path, "apiStatus": response.status_code,
               "durationMs": round((time.perf_counter() - started) * 1000, 1),
-              "apiRequestId": response.headers.get("x-amzn-RequestId")}
+              # HTTP APIs return the request id as apigw-requestid (REST APIs used x-amzn-RequestId).
+              "apiRequestId": response.headers.get("apigw-requestid") or response.headers.get("x-amzn-RequestId")}
     if response.status_code >= 400:
-        fields["apiError"] = _payload(response).get("error")
+        body = _payload(response)
+        fields["apiError"] = body.get("error") or body.get("message")
         weblog.warning("api call", **fields)
     else:
         weblog.info("api call", **fields)
@@ -70,10 +77,25 @@ def _payload(response):
         return {"error": response.text[:200] or f"HTTP {response.status_code}"}
 
 
+GATEWAY_MESSAGES = {
+    403: "This account type cannot use this page",
+    404: "That page or record was not found",
+    429: "Too many requests, please try again in a moment",
+}
+
+
+def _error_text(status, body):
+    if body.get("error"):
+        return body["error"]
+    if body.get("message"):
+        return GATEWAY_MESSAGES.get(status, body["message"])
+    return f"HTTP {status}"
+
+
 def _raise_for(response):
     if response.status_code >= 400:
         body = _payload(response)
-        raise ApiError(response.status_code, body.get("error") or f"HTTP {response.status_code}", body.get("details"))
+        raise ApiError(response.status_code, _error_text(response.status_code, body), body.get("details"))
 
 
 def public_call(method, path, json_body=None):

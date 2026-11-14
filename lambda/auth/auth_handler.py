@@ -1,6 +1,6 @@
 ﻿"""MediSlot Auth Lambda (architecture box 4a).
 
-Routes (REST API, Lambda proxy):
+Routes (HTTP API, Lambda proxy):
     POST /auth/doctors/register    public
     POST /auth/patients/register   public
     POST /auth/doctors/login       public
@@ -13,9 +13,15 @@ Routes (REST API, Lambda proxy):
 * Access token: HS256 JWT, 15 minutes (SSM), exactly sub/role/iat/exp/jti.
 * Refresh token: opaque random string, 7 days (SSM), stored only as a
   SHA-256 hash in DynamoDB (refresh-tokens, TTL on expiresAt). Rotated on
-  every refresh, so each refresh token works once.
-* Logout: deletes the refresh token and writes the access token's jti to
-  token-revocations with a TTL equal to the token's remaining lifetime.
+  every refresh, so each refresh token works once. The item also records the
+  jti of the access token issued with it (accessJti).
+* Active tokens: every access token is written to the active-tokens list
+  when it is issued, and the authorizer only accepts tokens on that list.
+  Login writes the refresh token and the access token in one transaction;
+  refresh swaps both (old refresh token and old access token out, new ones
+  in) in one transaction.
+* Logout: deletes the refresh token and takes the access token off the
+  active list, so it stops working at once.
 * Registration creates the users row and the matching doctors/patients row in
   one transaction, so the profile exists as soon as the account does.
 """
@@ -30,7 +36,7 @@ import bcrypt
 import pymysql
 from botocore.exceptions import ClientError
 
-from medislot_common import config, db, logs, profiles, tokens
+from medislot_common import active_tokens, config, db, logs, profiles, tokens
 from medislot_common.http import APIError, api_handler, identity, parse_body
 from medislot_common.validation import email as valid_email
 from medislot_common.validation import reject_unknown, text
@@ -81,10 +87,6 @@ def refresh_table():
     return config.table("REFRESH_TOKENS_TABLE")
 
 
-def revocations_table():
-    return config.table("TOKEN_REVOCATIONS_TABLE")
-
-
 # ---------------------------------------------------------------------------
 # Passwords
 # ---------------------------------------------------------------------------
@@ -121,17 +123,29 @@ def password_matches(password, stored_hash):
 
 def issue_session(user_id, role):
     cfg = settings()
-    access_token, _claims = tokens.issue(user_id, role, signing_secret(), cfg["issuer"], cfg["access_seconds"])
+    access_token, claims = tokens.issue(user_id, role, signing_secret(), cfg["issuer"], cfg["access_seconds"])
     raw_refresh = secrets.token_urlsafe(48)
     now = int(time.time())
-    refresh_table().put_item(
-        Item={
-            "tokenHash": tokens.refresh_token_hash(raw_refresh),
-            "userId": str(user_id),
-            "createdAt": now,
-            "expiresAt": now + cfg["refresh_seconds"],
-        },
-        ConditionExpression="attribute_not_exists(tokenHash)",
+    refresh = refresh_table()
+    # Both or neither: a refresh token without its access token on the list
+    # (or the other way round) would leave a half-made session.
+    refresh.meta.client.transact_write_items(
+        TransactItems=[
+            {
+                "Put": {
+                    "TableName": refresh.name,
+                    "Item": {
+                        "tokenHash": tokens.refresh_token_hash(raw_refresh),
+                        "userId": str(user_id),
+                        "accessJti": claims["jti"],
+                        "createdAt": now,
+                        "expiresAt": now + cfg["refresh_seconds"],
+                    },
+                    "ConditionExpression": "attribute_not_exists(tokenHash)",
+                }
+            },
+            {"Put": {"TableName": active_tokens.table().name, "Item": active_tokens.item_for(claims, now)}},
+        ]
     )
     return {
         "token_type": "Bearer",
@@ -245,42 +259,48 @@ def refresh(event):
         raise APIError(401, "Invalid or expired refresh token")
 
     cfg = settings()
-    access_token, _claims = tokens.issue(user["user_id"], user["role"], signing_secret(), cfg["issuer"], cfg["access_seconds"])
+    access_token, claims = tokens.issue(user["user_id"], user["role"], signing_secret(), cfg["issuer"], cfg["access_seconds"])
     new_raw = secrets.token_urlsafe(48)
     table = refresh_table()
+    active = active_tokens.table()
+    # Rotation, in one transaction: the old refresh token is deleted and the
+    # new one created (the delete is conditional, so a token works once), the
+    # new access token goes on the active list and the access token issued
+    # with the old refresh token comes off it.
+    operations = [
+        {
+            "Delete": {
+                "TableName": table.name,
+                "Key": {"tokenHash": old_hash},
+                "ConditionExpression": "userId = :uid AND expiresAt > :now",
+                "ExpressionAttributeValues": {":uid": user["user_id"], ":now": now},
+            }
+        },
+        {
+            "Put": {
+                "TableName": table.name,
+                "Item": {
+                    "tokenHash": tokens.refresh_token_hash(new_raw),
+                    "userId": user["user_id"],
+                    "accessJti": claims["jti"],
+                    "createdAt": now,
+                    "expiresAt": now + cfg["refresh_seconds"],
+                },
+                "ConditionExpression": "attribute_not_exists(tokenHash)",
+            }
+        },
+        {"Put": {"TableName": active.name, "Item": active_tokens.item_for(claims, now)}},
+    ]
+    if item.get("accessJti"):
+        operations.append({"Delete": {"TableName": active.name, "Key": {"jti": item["accessJti"]}}})
     try:
-        # Rotation: the old token is deleted and the new one created in one
-        # transaction. The delete is conditional, so a token works once.
-        table.meta.client.transact_write_items(
-            TransactItems=[
-                {
-                    "Delete": {
-                        "TableName": table.name,
-                        "Key": {"tokenHash": old_hash},
-                        "ConditionExpression": "userId = :uid AND expiresAt > :now",
-                        "ExpressionAttributeValues": {":uid": user["user_id"], ":now": now},
-                    }
-                },
-                {
-                    "Put": {
-                        "TableName": table.name,
-                        "Item": {
-                            "tokenHash": tokens.refresh_token_hash(new_raw),
-                            "userId": user["user_id"],
-                            "createdAt": now,
-                            "expiresAt": now + cfg["refresh_seconds"],
-                        },
-                        "ConditionExpression": "attribute_not_exists(tokenHash)",
-                    }
-                },
-            ]
-        )
+        table.meta.client.transact_write_items(TransactItems=operations)
     except ClientError as exc:
         if exc.response.get("Error", {}).get("Code") in ("TransactionCanceledException", "ConditionalCheckFailedException"):
             logs.warning("refresh rejected", reason="token_already_used", userId=user["user_id"])
             raise APIError(401, "Refresh token is invalid or has already been used") from None
         raise
-    logs.info("tokens refreshed", userId=user["user_id"], userRole=user["role"])
+    logs.info("tokens refreshed", userId=user["user_id"], userRole=user["role"], previousAccessToken=item.get("accessJti"))
     return 200, {
         "token_type": "Bearer",
         "access_token": access_token,
@@ -295,6 +315,7 @@ def logout(event):
     body = parse_body(event)
     raw = body.get("refresh_token")
     refresh_revoked = False
+    session_jti = None
     if raw is not None:
         if not isinstance(raw, str) or not raw.strip():
             raise APIError(400, "refresh_token must be a string")
@@ -303,6 +324,7 @@ def logout(event):
         if item and item.get("userId") != caller.user_id:
             raise APIError(400, "Refresh token belongs to another user")
         refresh_revoked = bool(item)
+        session_jti = (item or {}).get("accessJti")
         if item:
             try:
                 refresh_table().delete_item(
@@ -313,17 +335,12 @@ def logout(event):
             except ClientError as exc:
                 if exc.response.get("Error", {}).get("Code") != "ConditionalCheckFailedException":
                     raise
-    if not caller.jti or caller.exp <= 0:
+    if not caller.jti:
         raise APIError(401, "Missing token details")
-    # The denylist entry lives exactly as long as the access token would have.
-    revocations_table().put_item(
-        Item={
-            "jti": caller.jti,
-            "userId": caller.user_id,
-            "createdAt": int(time.time()),
-            "expiresAt": caller.exp,
-        }
-    )
+    # Off the active list: the authorizer refuses the token from now on.
+    active_tokens.remove(caller.jti)
+    if session_jti and session_jti != caller.jti:
+        active_tokens.remove(session_jti)
     logs.info("logged out", userId=caller.user_id, accessTokenRevoked=caller.jti, refreshTokenRevoked=refresh_revoked)
     return 200, {"message": "Logged out"}
 

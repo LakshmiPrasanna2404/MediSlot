@@ -38,7 +38,7 @@ Parameters:
     Type: String
     AllowedPattern: '^https://.+'
     Description: >-
-      REST API base URL (the ApiUrl output of the medislot-<env>-api stack). The
+      HTTP API base URL (the ApiUrl output of the medislot-<env>-api stack). The
       pipeline reads it from that stack and passes it in.
 
   LatestAmiId:

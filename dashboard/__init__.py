@@ -5,7 +5,7 @@
     /patient/*        patient dashboard (patient sessions only)
 
 The app is a pure API client. It has no database credentials and makes no
-database connection: every read and write is a call to the MediSlot REST API
+database connection: every read and write is a call to the MediSlot HTTP API
 with the JWT kept in a server-side session (only a random session id goes to
 the browser).
 """

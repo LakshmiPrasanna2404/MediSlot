@@ -1,8 +1,8 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
   MediSlot data stack. RDS MySQL in the private RDS subnets, every DynamoDB
-  table from the final DynamoDB schema (refresh-tokens, token-revocations,
-  slots, seats, waitlist, hold-offers, idempotency, dispatch-log) and the S3
+  table from the final DynamoDB schema (refresh-tokens, active-tokens,
+  doctor-slots, seats, waitlist, hold-offers, idempotency, dispatch-log) and the S3
   bucket for doctor profile photos. Tables and buckets keep their data if the
   stack is deleted (Retain).
 
@@ -139,6 +139,49 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  # The access tokens that may be used: the Lambda authorizer accepts a token
+  # only if its jti is here. Login and refresh add a row; logout, refresh and
+  # account removal delete rows. TTL removes rows once the token has expired.
+  # GSI_User_Tokens finds all of one user's tokens (sign out everywhere).
+  ActiveTokensTable:
+    Type: AWS::DynamoDB::Table
+    DeletionPolicy: Retain
+    UpdateReplacePolicy: Retain
+    Properties:
+      TableName: !Sub 'medislot-${Environment}-active-tokens'
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: jti
+          AttributeType: S
+        - AttributeName: userId
+          AttributeType: S
+      KeySchema:
+        - AttributeName: jti
+          KeyType: HASH
+      GlobalSecondaryIndexes:
+        - IndexName: GSI_User_Tokens
+          KeySchema:
+            - AttributeName: userId
+              KeyType: HASH
+          Projection:
+            ProjectionType: KEYS_ONLY
+      TimeToLiveSpecification:
+        AttributeName: expiresAt
+        Enabled: true
+      PointInTimeRecoverySpecification:
+        PointInTimeRecoveryEnabled: true
+      SSESpecification:
+        SSEEnabled: true
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  # LEGACY, kept for one deployment only. The logout deny list, replaced by
+  # ActiveTokensTable above. It stays in the template until the auth and app
+  # stacks stop importing its exports; the follow-up change removes it (see
+  # docs/runbook.md, section 8). Nothing reads or writes it any more.
   TokenRevocationsTable:
     Type: AWS::DynamoDB::Table
     DeletionPolicy: Retain
@@ -510,6 +553,17 @@ Outputs:
     Export:
       Name: !Sub 'medislot-${Environment}-refresh-tokens-table-arn'
 
+  ActiveTokensTableName:
+    Value: !Ref ActiveTokensTable
+    Export:
+      Name: !Sub 'medislot-${Environment}-active-tokens-table-name'
+
+  ActiveTokensTableArn:
+    Value: !GetAtt ActiveTokensTable.Arn
+    Export:
+      Name: !Sub 'medislot-${Environment}-active-tokens-table-arn'
+
+  # LEGACY exports of the old deny list; removed with it in the follow-up change.
   TokenRevocationsTableName:
     Value: !Ref TokenRevocationsTable
     Export:

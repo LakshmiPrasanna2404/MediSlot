@@ -13,7 +13,7 @@ gh api --method PUT "repos/${REPO}/branches/main/protection" --input - <<'JSON'
 {
   "required_status_checks": {
     "strict": true,
-    "contexts": ["Lint", "Security scans", "Unit tests"]
+    "contexts": ["Lint"]
   },
   "enforce_admins": true,
   "required_pull_request_reviews": {

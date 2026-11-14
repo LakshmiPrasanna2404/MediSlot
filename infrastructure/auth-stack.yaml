@@ -168,8 +168,8 @@ Resources:
           CONFIG_DOCTORS_DEFAULT_TIMEZONE: !Ref DefaultDoctorTimezone
           REFRESH_TOKENS_TABLE: !ImportValue
             Fn::Sub: medislot-${Environment}-refresh-tokens-table-name
-          TOKEN_REVOCATIONS_TABLE: !ImportValue
-            Fn::Sub: medislot-${Environment}-token-revocations-table-name
+          ACTIVE_TOKENS_TABLE: !ImportValue
+            Fn::Sub: medislot-${Environment}-active-tokens-table-name
       Tags:
         - Key: Project
           Value: MediSlot
@@ -181,7 +181,7 @@ Resources:
     DependsOn: AuthorizerFunctionLogGroup
     Properties:
       FunctionName: !Sub medislot-${Environment}-authorizer
-      Description: Verify JWT signature, issuer and expiry, check the denylist and the route role
+      Description: Verify JWT signature, issuer and expiry, check the active-tokens list and the route role
       Runtime: python3.12
       Handler: authorizer_handler.lambda_handler
       Role: !ImportValue
@@ -205,8 +205,8 @@ Resources:
         Variables:
           ENVIRONMENT: !Ref Environment
           JWT_SECRET_PARAMETER: !Sub /medislot/${Environment}/auth/jwt-secret
-          TOKEN_REVOCATIONS_TABLE: !ImportValue
-            Fn::Sub: medislot-${Environment}-token-revocations-table-name
+          ACTIVE_TOKENS_TABLE: !ImportValue
+            Fn::Sub: medislot-${Environment}-active-tokens-table-name
       Tags:
         - Key: Project
           Value: MediSlot

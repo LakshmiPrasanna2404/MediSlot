@@ -1,28 +1,37 @@
-"""MediSlot Lambda authorizer (architecture box 4, TOKEN type, cache TTL 0).
+"""MediSlot Lambda authorizer (architecture box 4).
+
+HTTP API Lambda authorizer: REQUEST type, payload format 2.0, simple
+responses, no caching (TTL 0) and no identity source, so this function sees
+every request, including ones without an Authorization header.
 
 1. Read the JWT signing secret from SSM (SecureString) at cold start.
 2. Verify the HS256 signature (algorithm pinned) and the issuer.
 3. Check expiry.
-4. Check the jti against the token-revocations denylist in DynamoDB.
+4. Check the jti is on the active-tokens list in DynamoDB. A token that is
+   not on it (logged out, replaced by a refresh, account removed) is refused.
 5. Check the role is allowed on the route: a doctor-only route rejects a
    patient token and vice versa.
-6. Return an IAM policy with userId, role, jti and exp in the context.
+6. Return {"isAuthorized": true} with userId, role, jti and exp as context.
 
 Outcomes:
-    bad, expired, tampered, wrongly signed or logged-out token -> 401
-    valid token, wrong role for the route                       -> 403 (Deny policy)
+    missing, bad, expired, tampered, wrongly signed or inactive token -> 401
+    valid token, wrong role for the route                             -> 403 (isAuthorized false)
 
-The authorizer cache TTL is 0: with any caching a token used after logout
-would still be accepted until the cache entry expired.
+The cache TTL is 0: with caching, a token used after logout would still be
+accepted until the cache entry expired.
+
+REST API (TOKEN authorizer) events are still answered with an IAM policy, so
+requests keep working while a deployment switches the API from REST to HTTP.
 """
 
 import os
 import re
 
-from medislot_common import config, logs, tokens
+from medislot_common import active_tokens, config, logs, tokens
 
-# Most specific first. Paths come from the methodArn, with real values in
-# place of path parameters (/doctors/me versus /doctors/<uuid>).
+# Most specific first. HTTP API: the path of the route key, with path
+# parameters as written in the route (/doctors/{doctorId}). REST API: the path
+# from the methodArn, with real values (/doctors/<uuid>). Both match.
 ROLE_RULES = (
     (re.compile(r"^/auth/logout$"), frozenset({"doctor", "patient"})),
     (re.compile(r"^/doctors/me(/.*)?$"), frozenset({"doctor"})),
@@ -64,6 +73,26 @@ def policy(principal_id, effect, method_arn, context=None):
     return result
 
 
+def route_path(event):
+    """The path the role rules are checked against."""
+    route = event.get("routeKey")
+    if route:
+        return route.split(" ", 1)[1] if " " in route else route
+    return path_from_method_arn(event.get("methodArn") or "")
+
+
+def allow(event, claims, context):
+    if event.get("methodArn"):
+        return policy(claims["sub"], "Allow", event["methodArn"], context)
+    return {"isAuthorized": True, "context": context}
+
+
+def deny(event, claims):
+    if event.get("methodArn"):
+        return policy(claims["sub"], "Deny", event["methodArn"])
+    return {"isAuthorized": False}
+
+
 def reject(reason):
     """API Gateway turns this exact exception message into 401 Unauthorized."""
     logs.metric("TokenValidationRejections", Reason=reason)
@@ -97,9 +126,9 @@ def issuer():
 
 def lambda_handler(event, context):
     logs.set_correlation_id(getattr(context, "aws_request_id", None), getattr(context, "aws_request_id", None))
-    method_arn = event.get("methodArn") or ""
+    path = route_path(event)
     token = bearer_token(event)
-    if not token or not method_arn:
+    if not token or not path:
         reject("missing")
     try:
         claims = tokens.verify(token, signing_secret(), issuer())
@@ -107,24 +136,18 @@ def lambda_handler(event, context):
         reject(str(exc))
 
     try:
-        revoked = config.table("TOKEN_REVOCATIONS_TABLE").get_item(Key={"jti": claims["jti"]}, ConsistentRead=True).get("Item")
-    except Exception:  # noqa: BLE001 - fail closed if the denylist cannot be read
-        logs.exception("revocation lookup failed")
-        reject("denylist_unavailable")
-    if revoked:
-        reject("revoked")
+        active = active_tokens.is_active(claims)
+    except Exception:  # noqa: BLE001 - fail closed if the list cannot be read
+        logs.exception("active token lookup failed")
+        reject("active_list_unavailable")
+    if not active:
+        reject("not_active")
 
-    path = path_from_method_arn(method_arn)
     logs.set_context(userId=claims["sub"], role=claims["role"], path=path)
     if claims["role"] not in allowed_roles(path):
         logs.metric("TokenValidationRejections", Reason="wrong_role")
         logs.warning("role not allowed on route", allowedRoles=sorted(allowed_roles(path)))
-        return policy(claims["sub"], "Deny", method_arn)
+        return deny(event, claims)
     logs.info("token accepted", jti=claims["jti"], expiresAt=claims["exp"])
-
-    return policy(
-        claims["sub"],
-        "Allow",
-        method_arn,
-        {"userId": claims["sub"], "role": claims["role"], "jti": claims["jti"], "exp": str(claims["exp"])},
-    )
+    context_values = {"userId": claims["sub"], "role": claims["role"], "jti": claims["jti"], "exp": str(claims["exp"])}
+    return allow(event, claims, context_values)

@@ -11,7 +11,7 @@ from cachelib import FileSystemCache
 
 
 def api_base_url():
-    """The REST API address."""
+    """The HTTP API address (stage included)."""
     return os.environ["MEDISLOT_API_BASE_URL"].rstrip("/")
 
 

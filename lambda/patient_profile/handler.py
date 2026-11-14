@@ -11,12 +11,11 @@ patient's profile. The profile row is created at registration.
 DELETE is refused while the patient has upcoming confirmed appointments.
 A patient with appointment history is deactivated (history stays for audit,
 login and refresh stop working); one without history is removed. Either way
-the access token used for the request is revoked at once.
+every access token of the account comes off the active-tokens list, so it is
+signed out on every device at once.
 """
 
-import time
-
-from medislot_common import config, db, logs, profiles
+from medislot_common import active_tokens, db, logs, profiles
 from medislot_common.http import APIError, api_handler, identity, parse_body
 from medislot_common.validation import reject_unknown
 
@@ -82,11 +81,12 @@ def delete_profile(event):
         else:
             cur.execute("DELETE FROM users WHERE user_id = %s", (caller.user_id,))  # cascades to patients
             outcome = "deleted"
-    config.table("TOKEN_REVOCATIONS_TABLE").put_item(
-        Item={"jti": caller.jti, "userId": caller.user_id, "createdAt": int(time.time()), "expiresAt": caller.exp}
-    )
+    # Signed out everywhere: every access token of this account comes off the
+    # active list (refresh tokens already fail, the account is gone or inactive).
+    signed_out = active_tokens.remove_all_for_user(caller.user_id)
+    active_tokens.remove(caller.jti)
     logs.info("patient account removed", patientId=current["patient_id"], outcome=outcome,
-              pastAppointments=int(counts["total"] or 0), accessTokenRevoked=caller.jti)
+              pastAppointments=int(counts["total"] or 0), accessTokensRevoked=max(signed_out, 1))
     return 200, {"message": f"Account {outcome}"}
 
 

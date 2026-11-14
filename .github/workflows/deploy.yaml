@@ -4,7 +4,7 @@ name: MediSlot CloudFormation CI/CD Pipeline
 #   Pull request into main: Lint.
 #   Push to main (or Run workflow): Lint, then one job per stack, each a
 #   CloudFormation change set: network, data, iam, auth, app, jobs, then the
-#   database migrations, the REST API and the web app. The web app comes last
+#   database migrations, the HTTP API and the web app. The web app comes last
 #   because it needs the API's URL.
 #
 # AWS access is the AWS_ROLE_ARN repository secret (GitHub OIDC). network,
@@ -131,10 +131,10 @@ jobs:
           python scripts/cfn_deploy.py --stack "medislot-${ENVIRONMENT}-data"
           --template infrastructure/data-stack.yaml --bucket "$ARTIFACT_BUCKET"
           --param "Environment=${ENVIRONMENT}"
-          --import RefreshTokensTable --import TokenRevocationsTable --import IdempotencyTable
+          --import RefreshTokensTable --import IdempotencyTable
           --import DoctorProfileFilesBucket
           --protect MediSlotMySQL --protect DoctorProfileFilesBucket
-          --protect RefreshTokensTable --protect TokenRevocationsTable --protect DoctorSlotsTable --protect SeatsTable
+          --protect RefreshTokensTable --protect ActiveTokensTable --protect DoctorSlotsTable --protect SeatsTable
           --protect WaitlistTable --protect HoldOffersTable --protect IdempotencyTable --protect DispatchLogTable
 
   deploy-iam:
@@ -270,8 +270,8 @@ jobs:
             echo "--- ${action}"; cat out.json; echo
             if grep -q FunctionError meta.json; then echo "::error::db-migrate ${action} failed"; exit 1; fi
           done
-      # Slot ids contain the consultation type id, so after a schema change the
-      # slots are rebuilt from the database. Idempotent: unchanged slots stay.
+      # After a schema change the slots are rebuilt from the database.
+      # Idempotent: unchanged slots stay.
       - name: Refresh slots
         run: |
           if aws lambda invoke --function-name "medislot-${ENVIRONMENT}-slot-materialiser" \
@@ -283,7 +283,7 @@ jobs:
           fi
 
   deploy-api:
-    name: Deploy REST API
+    name: Deploy HTTP API
     needs: migrate-db
     runs-on: ubuntu-latest
     steps:
@@ -297,12 +297,11 @@ jobs:
           role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
           aws-region: ${{ env.AWS_REGION }}
       - run: bash scripts/ci/aws_context.sh
-      - name: Render the API template
-        run: python scripts/render_api_template.py
-      - name: API (REST API, JWT authorizer, routes)
+      # The stage has AutoDeploy on, so the template is deployed as it is.
+      - name: API (HTTP API, JWT Lambda authorizer, routes)
         run: >-
           python scripts/cfn_deploy.py --stack "medislot-${ENVIRONMENT}-api"
-          --template build/templates/api-stack.yaml --bucket "$ARTIFACT_BUCKET" --role-arn "$EXECUTION_ROLE"
+          --template infrastructure/api-stack.yaml --bucket "$ARTIFACT_BUCKET" --role-arn "$EXECUTION_ROLE"
           --param "Environment=${ENVIRONMENT}"
 
   deploy-web:
@@ -325,7 +324,7 @@ jobs:
           mkdir -p build
           curl -sSfL -o build/rds-ca-bundle.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
           python scripts/build_lambdas.py --env "$ENVIRONMENT" --ca-bundle build/rds-ca-bundle.pem --upload "$ARTIFACT_BUCKET"
-      - name: REST API address (from the API stack's output)
+      - name: API address (from the API stack's output)
         run: |
           API_URL=$(aws cloudformation describe-stacks --stack-name "medislot-${ENVIRONMENT}-api" \
             --query "Stacks[0].Outputs[?OutputKey=='ApiUrl'].OutputValue" --output text 2>/dev/null || true)
