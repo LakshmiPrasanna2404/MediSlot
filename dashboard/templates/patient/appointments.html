@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}My appointments · MediSlot{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>My appointments</h1>
+    <p>Times are in each doctor's time zone.</p>
+  </div>
+  <nav class="segmented" aria-label="Which appointments">
+    <a href="{{ url_for('patient.appointments', show='upcoming') }}"{% if show == 'upcoming' %} aria-current="page"{% endif %}><span>Upcoming</span></a>
+    <a href="{{ url_for('patient.appointments', show='past') }}"{% if show == 'past' %} aria-current="page"{% endif %}><span>Past and cancelled</span></a>
+  </nav>
+</div>
+
+<section class="card">
+  {% if appointments %}
+    <ul class="plain-list appointment-list">
+    {% for a in appointments %}
+      {% set parts = (a.local_start|long_date).split(' ') %}
+      <li class="appointment{{ ' just-booked' if a.appointment_id == highlight }}">
+        <span class="date-tile{{ ' muted-tile' if a.status != 'CONFIRMED' }}" aria-hidden="true"><b>{{ parts[1] }}</b><span>{{ parts[2][:3] }}</span></span>
+        <span class="item-main">
+          <span class="item-title">{{ a.consultation_type_name }} with Dr. {{ a.doctor|person_name }}</span>
+          <span class="item-meta">
+            <span>{{ icon('clock', 14) }}{{ a.local_start|long_date }}, {{ a.local_start|local_time }} to {{ a.local_end|local_time }}</span>
+            {% if a.doctor.hospital_name %}<span>{{ icon('hospital', 14) }}{{ a.doctor.hospital_name }}{% if a.doctor.city %}, {{ a.doctor.city }}{% endif %}</span>{% endif %}
+            <span class="num">{{ a.consultation_fee|money }}</span>
+          </span>
+          {% if a.refund %}
+            <span class="refund-line">
+              {% if a.refund.refund_amount|float > 0 %}{{ icon('receipt', 14) }}Refunded {{ a.refund.refund_amount|money }} ({{ a.refund.refund_percent }}%)
+              {% else %}{{ icon('receipt', 14) }}No refund ({{ a.refund.reason|refund_reason|lower }}){% endif %}
+            </span>
+          {% endif %}
+        </span>
+        <span class="appointment-side">
+          <span class="chip status-{{ a.status|lower }}">{{ a.status|status_label }}</span>
+          {% if a.can_cancel %}
+            {% set preview = a.refund_if_cancelled_now %}
+            <details class="confirm">
+              <summary class="link-button danger">{{ icon('x-circle', 16) }}Cancel</summary>
+              <div class="confirm-panel">
+                {% if preview.refund_amount|float > 0 %}
+                  <p>Cancel now and <strong>{{ preview.refund_amount|money }}</strong> comes back ({{ preview.refund_percent }}% of {{ preview.base_fee_amount|money }}).</p>
+                {% else %}
+                  <p>It is too close to the start for a refund. Cancel anyway?</p>
+                {% endif %}
+                <form method="post" action="{{ url_for('patient.cancel', appointment_id=a.appointment_id) }}">
+                  <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                  <button type="submit" class="button danger small">Cancel appointment</button>
+                </form>
+              </div>
+            </details>
+          {% endif %}
+        </span>
+      </li>
+    {% endfor %}
+    </ul>
+  {% elif show == 'upcoming' %}
+    <div class="empty">
+      {{ icon('calendar-check', 24) }}
+      <p><strong>No upcoming appointments.</strong> Find a doctor and pick a time that suits you.</p>
+      <a class="button primary" href="{{ url_for('patient.search') }}">{{ icon('search', 16) }}Find a doctor</a>
+    </div>
+  {% else %}
+    <div class="empty">
+      {{ icon('calendar', 24) }}
+      <p><strong>Nothing here yet.</strong> Completed, missed and cancelled appointments appear here.</p>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}

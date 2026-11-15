@@ -44,8 +44,10 @@ def jwt_role(token):
         return None
 
 
-def _send(method, path, *, json_body=None, params=None, token=None):
+def _send(method, path, *, json_body=None, params=None, token=None, extra_headers=None):
     headers = {"X-Correlation-Id": g.get("correlation_id", "web"), "Accept": "application/json"}
+    if extra_headers:
+        headers.update(extra_headers)
     if token:
         headers["Authorization"] = f"Bearer {token}"
     started = time.perf_counter()
@@ -124,18 +126,23 @@ def refresh_tokens():
     return True
 
 
-def call(method, path, json_body=None, params=None):
-    """An authenticated call. Rotates the tokens once on 401."""
+def call(method, path, json_body=None, params=None, headers=None):
+    """An authenticated call. Rotates the tokens once on 401.
+
+    headers: extra request headers, such as the Idempotency-Key of a booking
+    (the retry after a token refresh sends the same key, so it books once).
+    """
     token = session.get("access_token")
     if not token:
         raise SessionExpired()
-    response = _send(method, path, json_body=json_body, params=params, token=token)
+    response = _send(method, path, json_body=json_body, params=params, token=token, extra_headers=headers)
     if response.status_code == 401:
         if not refresh_tokens():
             weblog.info("session expired, signing out")
             session.clear()
             raise SessionExpired()
-        response = _send(method, path, json_body=json_body, params=params, token=session["access_token"])
+        response = _send(method, path, json_body=json_body, params=params, token=session["access_token"],
+                         extra_headers=headers)
         if response.status_code == 401:
             weblog.info("session expired, signing out")
             session.clear()

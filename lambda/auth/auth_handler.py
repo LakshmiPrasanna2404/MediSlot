@@ -23,7 +23,11 @@ Routes (HTTP API, Lambda proxy):
 * Logout: deletes the refresh token and takes the access token off the
   active list, so it stops working at once.
 * Registration creates the users row and the matching doctors/patients row in
-  one transaction, so the profile exists as soon as the account does.
+  one transaction, so the profile exists as soon as the account does. Then the
+  email is subscribed to the notifications topic with a filter on the new
+  userId (medislot_common.notify): AWS sends a confirmation email, and once it
+  is confirmed the account receives its own booking, cancellation and reminder
+  emails. A failed subscription never fails the registration.
 """
 
 import os
@@ -36,7 +40,7 @@ import bcrypt
 import pymysql
 from botocore.exceptions import ClientError
 
-from medislot_common import active_tokens, config, db, logs, profiles, tokens
+from medislot_common import active_tokens, config, db, logs, notify, profiles, tokens
 from medislot_common.http import APIError, api_handler, identity, parse_body
 from medislot_common.validation import email as valid_email
 from medislot_common.validation import reject_unknown, text
@@ -203,11 +207,24 @@ def register(event, role):
         raise
     logs.metric("Registrations", Role=role)
     logs.info("account registered", userId=user_id, role=role)
+    subscribed = _subscribe_notifications(address, user_id)
     return 201, {
         "message": "Registration successful",
         "user": {"user_id": user_id, **names, "email": address, "role": role},
         f"{role}_id": profile_id,
+        "notifications": "confirmation_email_sent" if subscribed else "unavailable",
     }
+
+
+def _subscribe_notifications(address, user_id):
+    try:
+        arn = notify.subscribe(address, user_id)
+    except Exception:  # noqa: BLE001 - the account exists; notifications can be subscribed later
+        logs.metric("SubscriptionFailures")
+        logs.exception("notification subscription failed", userId=user_id)
+        return False
+    logs.info("notification subscription requested; AWS emails a confirmation link", userId=user_id)
+    return bool(arn)
 
 
 def login(event, role):

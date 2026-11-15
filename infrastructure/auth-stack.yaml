@@ -170,6 +170,9 @@ Resources:
             Fn::Sub: medislot-${Environment}-refresh-tokens-table-name
           ACTIVE_TOKENS_TABLE: !ImportValue
             Fn::Sub: medislot-${Environment}-active-tokens-table-name
+          # Registration subscribes the new account's email (events stack).
+          NOTIFICATION_TOPIC_ARN: !ImportValue
+            Fn::Sub: medislot-${Environment}-notification-topic-arn
       Tags:
         - Key: Project
           Value: MediSlot

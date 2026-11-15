@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  MediSlot application Lambdas, one per function in the architecture diagrams (doctor: profile, photo upload, consultation types, availability and blackouts, schedule; patient: profile, doctor search, slot lookup) plus the db-migrate function the pipeline runs after each deployment. All run in the private Lambda subnets; API Gateway routes are added by api-stack.
+  MediSlot application Lambdas, one per function in the architecture diagrams (doctor: profile, photo upload, consultation types, availability and blackouts, schedule, outcome, slot cancel; patient: profile, doctor search, slot lookup, booking, cancel, refund history), the slot-cancel Step Functions workflow, plus the db-migrate function the pipeline runs after each deployment. All run in the private Lambda subnets; API Gateway routes are added by api-stack.
 
 Parameters:
   Environment:
@@ -41,6 +41,21 @@ Parameters:
   DbMigrateCodeS3Key:
     Type: String
     Description: S3 key of the db-migrate package (content-addressed, built by scripts/build_lambdas.py)
+  BookingCodeS3Key:
+    Type: String
+    Description: S3 key of the booking package (content-addressed, built by scripts/build_lambdas.py)
+  CancelCodeS3Key:
+    Type: String
+    Description: S3 key of the cancel package (content-addressed, built by scripts/build_lambdas.py)
+  RefundHistoryCodeS3Key:
+    Type: String
+    Description: S3 key of the refund-history package (content-addressed, built by scripts/build_lambdas.py)
+  OutcomeCodeS3Key:
+    Type: String
+    Description: S3 key of the outcome package (content-addressed, built by scripts/build_lambdas.py)
+  SlotCancelCodeS3Key:
+    Type: String
+    Description: S3 key of the slot-cancel package (content-addressed, built by scripts/build_lambdas.py)
 
   LogRetentionDays:
     Type: Number
@@ -98,6 +113,82 @@ Parameters:
     MinValue: 1
     MaxValue: 100
     Description: Largest doctor search page size.
+
+  MaxUpcomingPerDoctor:
+    Type: Number
+    Default: 3
+    MinValue: 1
+    MaxValue: 20
+    Description: Most upcoming (CONFIRMED, not yet started) appointments one patient may hold with the same doctor.
+
+  BookingRetryMaxAttempts:
+    Type: Number
+    Default: 5
+    MinValue: 1
+    MaxValue: 10
+    Description: Seat-claim attempts when another booking changed the slot at the same moment (optimistic concurrency).
+
+  BookingRetryBaseMs:
+    Type: Number
+    Default: 20
+    MinValue: 5
+    MaxValue: 500
+    Description: Base of the exponential backoff (with full jitter) between seat-claim attempts, in milliseconds.
+
+  IdempotencyTtlHours:
+    Type: Number
+    Default: 24
+    MinValue: 1
+    MaxValue: 168
+    Description: How long a booking Idempotency-Key and its stored answer are kept.
+
+  RefundTierHours:
+    Type: String
+    Default: '48,24,6'
+    AllowedPattern: '^[0-9]+,[0-9]+,[0-9]+$'
+    Description: >-
+      Patient cancellation tier bounds in hours before the start, descending. With
+      48,24,6: more than 48 h, 24 h up to and including 48 h, 6 h up to 24 h, less than 6 h.
+
+  RefundTierPercents:
+    Type: String
+    Default: '100,75,50,0'
+    AllowedPattern: '^[0-9]{1,3},[0-9]{1,3},[0-9]{1,3},[0-9]{1,3}$'
+    Description: Refund percentage for each of the four patient cancellation tiers, in the order of RefundTierHours.
+
+  DoctorCancelRefundPercent:
+    Type: Number
+    Default: 100
+    MinValue: 0
+    MaxValue: 100
+    Description: Refund percentage when the doctor cancels a slot.
+
+  ReminderOffsetsHours:
+    Type: String
+    Default: '24,2'
+    AllowedPattern: '^[0-9]+(,[0-9]+)*$'
+    Description: Hours before the start at which reminder emails are sent (one schedule each).
+
+  NoShowGraceMinutes:
+    Type: Number
+    Default: 30
+    MinValue: 0
+    MaxValue: 240
+    Description: Minutes after the slot end before an unmarked appointment becomes NO_SHOW. Keep equal to NoShowGraceMinutes in the jobs stack.
+
+  RefundsDefaultPageSize:
+    Type: Number
+    Default: 20
+    MinValue: 1
+    MaxValue: 100
+    Description: Refund history page size when the caller gives none.
+
+  RefundsMaxPageSize:
+    Type: Number
+    Default: 100
+    MinValue: 1
+    MaxValue: 200
+    Description: Largest refund history page size.
 
 Resources:
   DoctorProfileLogGroup:
@@ -602,6 +693,415 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
+  # ---------------------------------------------------------------------------
+  # Milestone 5: booking, cancellation and refunds, outcomes, slot cancel
+  # ---------------------------------------------------------------------------
+  BookingLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-booking
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  BookingFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: BookingLogGroup
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-booking
+      Description: 'Booking: book a seat (idempotent, optimistic concurrency), list and read own appointments'
+      Runtime: python3.12
+      Handler: handler.lambda_handler
+      Role: !ImportValue
+        Fn::Sub: medislot-${Environment}-booking-role-arn
+      Timeout: 30
+      MemorySize: 512
+      Architectures: [x86_64]
+      Code:
+        S3Bucket: !Ref CodeS3Bucket
+        S3Key: !Ref BookingCodeS3Key
+      VpcConfig:
+        SubnetIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az1-id
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az2-id
+        SecurityGroupIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-sg-id
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          CONFIG_REFUNDS_TIER_HOURS: !Ref RefundTierHours
+          CONFIG_REFUNDS_TIER_PERCENTS: !Ref RefundTierPercents
+          CONFIG_BOOKING_MAX_UPCOMING_PER_DOCTOR: !Ref MaxUpcomingPerDoctor
+          CONFIG_BOOKING_RETRY_MAX_ATTEMPTS: !Ref BookingRetryMaxAttempts
+          CONFIG_BOOKING_RETRY_BASE_MS: !Ref BookingRetryBaseMs
+          CONFIG_IDEMPOTENCY_TTL_HOURS: !Ref IdempotencyTtlHours
+          CONFIG_REMINDERS_OFFSETS_HOURS: !Ref ReminderOffsetsHours
+          CONFIG_NO_SHOW_GRACE_MINUTES: !Ref NoShowGraceMinutes
+          SLOTS_TABLE: !ImportValue
+            Fn::Sub: medislot-${Environment}-doctor-slots-table-name
+          SEATS_TABLE: !ImportValue
+            Fn::Sub: medislot-${Environment}-seats-table-name
+          IDEMPOTENCY_TABLE: !ImportValue
+            Fn::Sub: medislot-${Environment}-idempotency-table-name
+          EVENT_BUS_NAME: !ImportValue
+            Fn::Sub: medislot-${Environment}-event-bus-name
+          REMINDER_FUNCTION_ARN: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:medislot-${Environment}-reminder
+          NO_SHOW_FUNCTION_ARN: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:medislot-${Environment}-no-show
+          SCHEDULER_ROLE_ARN: !ImportValue
+            Fn::Sub: medislot-${Environment}-scheduler-invoke-role-arn
+          DB_HOST: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-endpoint
+          DB_PORT: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-port
+          DB_NAME: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-name
+          DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/db/username
+          DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  CancelLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-cancel
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  CancelFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: CancelLogGroup
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-cancel
+      Description: 'Cancel: patient cancellation with the refund tier, seat released, schedules deleted'
+      Runtime: python3.12
+      Handler: handler.lambda_handler
+      Role: !ImportValue
+        Fn::Sub: medislot-${Environment}-cancel-role-arn
+      Timeout: 30
+      MemorySize: 512
+      Architectures: [x86_64]
+      Code:
+        S3Bucket: !Ref CodeS3Bucket
+        S3Key: !Ref CancelCodeS3Key
+      VpcConfig:
+        SubnetIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az1-id
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az2-id
+        SecurityGroupIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-sg-id
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          CONFIG_REFUNDS_TIER_HOURS: !Ref RefundTierHours
+          CONFIG_REFUNDS_TIER_PERCENTS: !Ref RefundTierPercents
+          CONFIG_REMINDERS_OFFSETS_HOURS: !Ref ReminderOffsetsHours
+          SLOTS_TABLE: !ImportValue
+            Fn::Sub: medislot-${Environment}-doctor-slots-table-name
+          SEATS_TABLE: !ImportValue
+            Fn::Sub: medislot-${Environment}-seats-table-name
+          EVENT_BUS_NAME: !ImportValue
+            Fn::Sub: medislot-${Environment}-event-bus-name
+          SCHEDULER_ROLE_ARN: !ImportValue
+            Fn::Sub: medislot-${Environment}-scheduler-invoke-role-arn
+          DB_HOST: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-endpoint
+          DB_PORT: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-port
+          DB_NAME: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-name
+          DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/db/username
+          DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  RefundHistoryLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-refund-history
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  RefundHistoryFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: RefundHistoryLogGroup
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-refund-history
+      Description: 'Refund History: the patient''s refund ledger, newest first'
+      Runtime: python3.12
+      Handler: handler.lambda_handler
+      Role: !ImportValue
+        Fn::Sub: medislot-${Environment}-refund-history-role-arn
+      Timeout: 20
+      MemorySize: 256
+      Architectures: [x86_64]
+      Code:
+        S3Bucket: !Ref CodeS3Bucket
+        S3Key: !Ref RefundHistoryCodeS3Key
+      VpcConfig:
+        SubnetIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az1-id
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az2-id
+        SecurityGroupIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-sg-id
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          CONFIG_REFUNDS_DEFAULT_PAGE_SIZE: !Ref RefundsDefaultPageSize
+          CONFIG_REFUNDS_MAX_PAGE_SIZE: !Ref RefundsMaxPageSize
+          DB_HOST: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-endpoint
+          DB_PORT: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-port
+          DB_NAME: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-name
+          DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/db/username
+          DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  OutcomeLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-outcome
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  OutcomeFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: OutcomeLogGroup
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-outcome
+      Description: 'Outcome: the doctor marks an appointment COMPLETED or NO_SHOW'
+      Runtime: python3.12
+      Handler: handler.lambda_handler
+      Role: !ImportValue
+        Fn::Sub: medislot-${Environment}-outcome-role-arn
+      Timeout: 20
+      MemorySize: 256
+      Architectures: [x86_64]
+      Code:
+        S3Bucket: !Ref CodeS3Bucket
+        S3Key: !Ref OutcomeCodeS3Key
+      VpcConfig:
+        SubnetIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az1-id
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az2-id
+        SecurityGroupIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-sg-id
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          EVENT_BUS_NAME: !ImportValue
+            Fn::Sub: medislot-${Environment}-event-bus-name
+          DB_HOST: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-endpoint
+          DB_PORT: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-port
+          DB_NAME: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-name
+          DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/db/username
+          DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  SlotCancelLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-slot-cancel
+      RetentionInDays: !Ref LogRetentionDays
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  SlotCancelFunction:
+    Type: AWS::Lambda::Function
+    DependsOn: SlotCancelLogGroup
+    Properties:
+      FunctionName: !Sub medislot-${Environment}-slot-cancel
+      Description: 'Slot Cancel: closes a slot and runs the slot-cancel workflow steps (full refunds)'
+      Runtime: python3.12
+      Handler: handler.lambda_handler
+      Role: !ImportValue
+        Fn::Sub: medislot-${Environment}-slot-cancel-role-arn
+      Timeout: 60
+      MemorySize: 512
+      Architectures: [x86_64]
+      Code:
+        S3Bucket: !Ref CodeS3Bucket
+        S3Key: !Ref SlotCancelCodeS3Key
+      VpcConfig:
+        SubnetIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az1-id
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-subnet-az2-id
+        SecurityGroupIds:
+          - !ImportValue
+            Fn::Sub: medislot-${Environment}-lambda-sg-id
+      Environment:
+        Variables:
+          ENVIRONMENT: !Ref Environment
+          CONFIG_REFUNDS_DOCTOR_CANCEL_PERCENT: !Ref DoctorCancelRefundPercent
+          CONFIG_REMINDERS_OFFSETS_HOURS: !Ref ReminderOffsetsHours
+          SLOTS_TABLE: !ImportValue
+            Fn::Sub: medislot-${Environment}-doctor-slots-table-name
+          SEATS_TABLE: !ImportValue
+            Fn::Sub: medislot-${Environment}-seats-table-name
+          EVENT_BUS_NAME: !ImportValue
+            Fn::Sub: medislot-${Environment}-event-bus-name
+          SCHEDULER_ROLE_ARN: !ImportValue
+            Fn::Sub: medislot-${Environment}-scheduler-invoke-role-arn
+          SLOT_CANCEL_STATE_MACHINE_ARN: !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:medislot-${Environment}-slot-cancel
+          DB_HOST: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-endpoint
+          DB_PORT: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-port
+          DB_NAME: !ImportValue
+            Fn::Sub: medislot-${Environment}-db-name
+          DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/db/username
+          DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
+  # Slot cancel workflow (architecture box 5): list the slot's CONFIRMED
+  # appointments, cancel them with a Map (5 at a time), list again until none
+  # is left (a booking that was committing while the slot closed), then
+  # publish SlotCancelled. Every step is the Slot Cancel Lambda and is safe to
+  # retry, so each one retries on any error.
+  SlotCancelStateMachine:
+    Type: AWS::StepFunctions::StateMachine
+    Properties:
+      StateMachineName: !Sub medislot-${Environment}-slot-cancel
+      StateMachineType: STANDARD
+      RoleArn: !ImportValue
+        Fn::Sub: medislot-${Environment}-slot-cancel-workflow-role-arn
+      DefinitionSubstitutions:
+        StepFunction: !GetAtt SlotCancelFunction.Arn
+      Definition:
+        Comment: Cancel every booking in a slot the doctor cancelled, with full refunds
+        StartAt: ListAppointments
+        States:
+          ListAppointments:
+            Type: Task
+            Resource: ${StepFunction}
+            Parameters:
+              workflowStep: listAppointments
+              slotId.$: $.slotId
+              round.$: $.list.round
+              correlationId.$: $.correlationId
+            ResultPath: $.list
+            Retry:
+              - ErrorEquals: [States.ALL]
+                IntervalSeconds: 2
+                MaxAttempts: 3
+                BackoffRate: 2
+            Next: AnyLeft
+          AnyLeft:
+            Type: Choice
+            Choices:
+              - Variable: $.list.count
+                NumericEquals: 0
+                Next: Finish
+              - Variable: $.list.round
+                NumericGreaterThan: 3
+                Next: AppointmentsLeft
+            Default: CancelEach
+          CancelEach:
+            Type: Map
+            ItemsPath: $.list.appointmentIds
+            MaxConcurrency: 5
+            ItemSelector:
+              workflowStep: cancelAppointment
+              appointmentId.$: $$.Map.Item.Value
+              slotId.$: $.slotId
+              reason.$: $.reason
+              correlationId.$: $.correlationId
+            ItemProcessor:
+              ProcessorConfig:
+                Mode: INLINE
+              StartAt: CancelAppointment
+              States:
+                CancelAppointment:
+                  Type: Task
+                  Resource: ${StepFunction}
+                  Retry:
+                    - ErrorEquals: [States.ALL]
+                      IntervalSeconds: 2
+                      MaxAttempts: 4
+                      BackoffRate: 2
+                  End: true
+            ResultPath: null
+            Next: ListAppointments
+          Finish:
+            Type: Task
+            Resource: ${StepFunction}
+            Parameters:
+              workflowStep: finish
+              slotId.$: $.slotId
+              doctorId.$: $.doctorId
+              reason.$: $.reason
+              rounds.$: $.list.round
+              correlationId.$: $.correlationId
+            Retry:
+              - ErrorEquals: [States.ALL]
+                IntervalSeconds: 2
+                MaxAttempts: 3
+                BackoffRate: 2
+            End: true
+          AppointmentsLeft:
+            Type: Fail
+            Error: AppointmentsLeft
+            Cause: Bookings were still CONFIRMED after three rounds; see the Slot Cancel Lambda log.
+      Tags:
+        - Key: Project
+          Value: MediSlot
+        - Key: Environment
+          Value: !Ref Environment
+
 Outputs:
   DoctorProfileFunctionArn:
     Value: !GetAtt DoctorProfileFunction.Arn
@@ -675,3 +1175,47 @@ Outputs:
     Value: !Ref DbMigrateFunction
     Export:
       Name: !Sub medislot-${Environment}-db-migrate-function-name
+  BookingFunctionArn:
+    Value: !GetAtt BookingFunction.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-booking-function-arn
+  BookingFunctionName:
+    Value: !Ref BookingFunction
+    Export:
+      Name: !Sub medislot-${Environment}-booking-function-name
+  CancelFunctionArn:
+    Value: !GetAtt CancelFunction.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-cancel-function-arn
+  CancelFunctionName:
+    Value: !Ref CancelFunction
+    Export:
+      Name: !Sub medislot-${Environment}-cancel-function-name
+  RefundHistoryFunctionArn:
+    Value: !GetAtt RefundHistoryFunction.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-refund-history-function-arn
+  RefundHistoryFunctionName:
+    Value: !Ref RefundHistoryFunction
+    Export:
+      Name: !Sub medislot-${Environment}-refund-history-function-name
+  OutcomeFunctionArn:
+    Value: !GetAtt OutcomeFunction.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-outcome-function-arn
+  OutcomeFunctionName:
+    Value: !Ref OutcomeFunction
+    Export:
+      Name: !Sub medislot-${Environment}-outcome-function-name
+  SlotCancelFunctionArn:
+    Value: !GetAtt SlotCancelFunction.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-slot-cancel-function-arn
+  SlotCancelFunctionName:
+    Value: !Ref SlotCancelFunction
+    Export:
+      Name: !Sub medislot-${Environment}-slot-cancel-function-name
+  SlotCancelStateMachineArn:
+    Value: !Ref SlotCancelStateMachine
+    Export:
+      Name: !Sub medislot-${Environment}-slot-cancel-state-machine-arn

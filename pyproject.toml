@@ -1,6 +1,6 @@
 [project]
 name = "medislot"
-version = "0.4.0"
+version = "0.5.0"
 description = "MediSlot doctor appointment platform (AWS-native capstone)"
 requires-python = ">=3.12"
 

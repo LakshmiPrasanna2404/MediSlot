@@ -35,7 +35,7 @@
       </div>
     {% else %}
       <table class="table stack">
-        <thead><tr><th>Time</th><th>Consultation</th><th>Seats</th><th>Booked patients</th><th>Status</th></tr></thead>
+        <thead><tr><th>Time</th><th>Consultation</th><th>Seats</th><th>Booked patients</th><th>Slot</th></tr></thead>
         <tbody>
         {% for slot in day.slots %}
           {% set held = slot.held_count or 0 %}
@@ -51,11 +51,44 @@
                 {% if held %}<span class="chip chip-warn">{{ held }} held</span>{% endif %}
               </span>
             </td>
+            {% set started = slot.start_utc and slot.start_utc <= now_utc %}
             <td data-label="Patients">
-              {% for p in slot.patients %}<div class="patient">{{ p|person_name('patient_') }} <span class="chip status-{{ p.status|lower }}">{{ p.status|capitalize }}</span></div>
+              {% for p in slot.patients %}
+                <div class="patient">
+                  <span>{{ p|person_name('patient_') }}</span>
+                  <span class="chip status-{{ p.status|lower }}">{{ p.status|status_label }}</span>
+                  {% if p.status == 'CONFIRMED' and started %}
+                    <form method="post" action="{{ url_for('doctor.outcome', appointment_id=p.appointment_id) }}" class="outcome-actions">
+                      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                      <input type="hidden" name="date" value="{{ data.get('from', '') }}">
+                      <input type="hidden" name="view" value="{{ view }}">
+                      <button type="submit" name="outcome" value="COMPLETED" class="link-button">{{ icon('check', 15) }}Completed</button>
+                      <button type="submit" name="outcome" value="NO_SHOW" class="link-button danger">{{ icon('user-x', 15) }}No-show</button>
+                    </form>
+                  {% endif %}
+                </div>
               {% else %}<span class="muted">None yet</span>{% endfor %}
             </td>
-            <td data-label="Status"><span class="chip status-{{ slot.status|lower }}">{{ slot.status|capitalize }}</span></td>
+            <td data-label="Slot">
+              <span class="chip status-{{ slot.status|lower }}">{{ slot.status|status_label }}</span>
+              {% if slot.status == 'OPEN' and not started %}
+                {% set booked_here = slot.patients|selectattr('status', 'equalto', 'CONFIRMED')|list|length %}
+                <details class="confirm align-end">
+                  <summary class="link-button danger">{{ icon('x-circle', 15) }}Cancel slot</summary>
+                  <form method="post" action="{{ url_for('doctor.cancel_slot') }}" class="confirm-panel">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
+                    <input type="hidden" name="slot_id" value="{{ slot.slot_id }}">
+                    <input type="hidden" name="date" value="{{ data.get('from', '') }}">
+                    <input type="hidden" name="view" value="{{ view }}">
+                    <p>{% if booked_here %}{{ booked_here }} booked patient{{ 's' if booked_here != 1 }} will get a full refund and an email.{% else %}Nobody has booked this slot yet.{% endif %} The slot closes for booking at once.</p>
+                    <label><span>Reason for patients <small>(optional)</small></span>
+                      <input type="text" name="reason" maxlength="255" placeholder="For example: called to an emergency">
+                    </label>
+                    <button type="submit" class="button danger small">Cancel this slot</button>
+                  </form>
+                </details>
+              {% endif %}
+            </td>
           </tr>
         {% endfor %}
         </tbody>

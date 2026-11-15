@@ -66,7 +66,7 @@ def _register(role):
     if request.method == "POST":
         body = form_body(DOCTOR_FIELDS if role == "doctor" else PATIENT_FIELDS)
         try:
-            api_client.public_call("POST", f"/auth/{role}s/register", body)
+            result = api_client.public_call("POST", f"/auth/{role}s/register", body)
         except ApiError as exc:
             weblog.warning("registration failed", portal=role, apiStatus=exc.status, apiError=exc.message)
             message = exc.message
@@ -76,6 +76,8 @@ def _register(role):
             return render_template(f"register_{role}.html", role=role, form=request.form), exc.status
         weblog.info("registration succeeded", portal=role)
         flash("Account created. Please log in.", "success")
+        if result.get("notifications") == "confirmation_email_sent":
+            flash("We sent you an email from AWS Notifications. Confirm it to get booking and reminder emails.", "info")
         return redirect(url_for(f"auth.{role}_login"))
     return render_template(f"register_{role}.html", role=role, form={})
 

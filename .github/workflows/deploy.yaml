@@ -3,9 +3,10 @@ name: MediSlot CloudFormation CI/CD Pipeline
 # One workflow for everything.
 #   Pull request into main: Lint.
 #   Push to main (or Run workflow): Lint, then one job per stack, each a
-#   CloudFormation change set: network, data, iam, auth, app, jobs, then the
-#   database migrations, the HTTP API and the web app. The web app comes last
-#   because it needs the API's URL.
+#   CloudFormation change set: network, data, iam, events, auth, app, jobs,
+#   then the database migrations, the HTTP API and the web app. events comes
+#   before auth because registration subscribes accounts to its SNS topic; the
+#   web app comes last because it needs the API's URL.
 #
 # AWS access is the AWS_ROLE_ARN repository secret (GitHub OIDC). network,
 # data and iam are deployed with that role; every other stack through the
@@ -103,6 +104,8 @@ jobs:
           --param "Environment=${ENVIRONMENT}"
           --param "S3PrefixListId=${{ steps.prefix.outputs.s3 }}"
           --param "DynamoDBPrefixListId=${{ steps.prefix.outputs.dynamodb }}"
+          --param EnableSNSEndpoint=true --param EnableEventBridgeEndpoint=true
+          --param EnableStepFunctionsEndpoint=true --param EnableSchedulerEndpoint=true
           --protect MediSlotVPC --protect PublicSubnet
           --protect PrivateLambdaSubnetAZ1 --protect PrivateLambdaSubnetAZ2
           --protect PrivateRDSSubnetAZ1 --protect PrivateRDSSubnetAZ2
@@ -158,9 +161,36 @@ jobs:
           --template infrastructure/iam-stack.yaml --bucket "$ARTIFACT_BUCKET"
           --param "Environment=${ENVIRONMENT}"
 
+  deploy-events:
+    name: Deploy Events and Notifications
+    needs: deploy-iam
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - run: pip install boto3==1.43.126 cfn-flip==1.3.0
+      - uses: aws-actions/configure-aws-credentials@v6
+        with:
+          role-to-assume: ${{ secrets.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+      - run: bash scripts/ci/aws_context.sh
+      - name: Build and upload packages
+        run: |
+          mkdir -p build
+          curl -sSfL -o build/rds-ca-bundle.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
+          python scripts/build_lambdas.py --env "$ENVIRONMENT" --ca-bundle build/rds-ca-bundle.pem --upload "$ARTIFACT_BUCKET"
+      - name: Events (bus, notifications topic, Notification Lambda and its rule)
+        run: >-
+          python scripts/cfn_deploy.py --stack "medislot-${ENVIRONMENT}-events"
+          --template infrastructure/events-stack.yaml --bucket "$ARTIFACT_BUCKET" --role-arn "$EXECUTION_ROLE"
+          --param "Environment=${ENVIRONMENT}" --param "CodeS3Bucket=$ARTIFACT_BUCKET"
+          --param "NotificationCodeS3Key=$(jq -r '.functions.notification' build/manifest.json)"
+
   deploy-auth:
     name: Deploy Auth and Authorizer Lambdas
-    needs: deploy-iam
+    needs: deploy-events
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
@@ -208,7 +238,7 @@ jobs:
           mkdir -p build
           curl -sSfL -o build/rds-ca-bundle.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
           python scripts/build_lambdas.py --env "$ENVIRONMENT" --ca-bundle build/rds-ca-bundle.pem --upload "$ARTIFACT_BUCKET"
-      - name: App (doctor and patient domain Lambdas, db-migrate)
+      - name: App (doctor and patient domain Lambdas, slot-cancel workflow, db-migrate)
         run: >-
           python scripts/cfn_deploy.py --stack "medislot-${ENVIRONMENT}-app"
           --template infrastructure/app-stack.yaml --bucket "$ARTIFACT_BUCKET" --role-arn "$EXECUTION_ROLE"
@@ -222,6 +252,11 @@ jobs:
           --param "DoctorSearchCodeS3Key=$(jq -r '.functions["doctor-search"]' build/manifest.json)"
           --param "SlotLookupCodeS3Key=$(jq -r '.functions["slot-lookup"]' build/manifest.json)"
           --param "DbMigrateCodeS3Key=$(jq -r '.functions["db-migrate"]' build/manifest.json)"
+          --param "BookingCodeS3Key=$(jq -r '.functions.booking' build/manifest.json)"
+          --param "CancelCodeS3Key=$(jq -r '.functions.cancel' build/manifest.json)"
+          --param "RefundHistoryCodeS3Key=$(jq -r '.functions["refund-history"]' build/manifest.json)"
+          --param "OutcomeCodeS3Key=$(jq -r '.functions.outcome' build/manifest.json)"
+          --param "SlotCancelCodeS3Key=$(jq -r '.functions["slot-cancel"]' build/manifest.json)"
 
   deploy-jobs:
     name: Deploy Scheduled Jobs
@@ -243,12 +278,14 @@ jobs:
           mkdir -p build
           curl -sSfL -o build/rds-ca-bundle.pem https://truststore.pki.rds.amazonaws.com/global/global-bundle.pem
           python scripts/build_lambdas.py --env "$ENVIRONMENT" --ca-bundle build/rds-ca-bundle.pem --upload "$ARTIFACT_BUCKET"
-      - name: Jobs (slot materialiser and its daily schedule)
+      - name: Jobs (slot materialiser and its daily schedule, reminder and no-show)
         run: >-
           python scripts/cfn_deploy.py --stack "medislot-${ENVIRONMENT}-jobs"
           --template infrastructure/jobs-stack.yaml --bucket "$ARTIFACT_BUCKET" --role-arn "$EXECUTION_ROLE"
           --param "Environment=${ENVIRONMENT}" --param "CodeS3Bucket=$ARTIFACT_BUCKET"
           --param "SlotMaterialiserCodeS3Key=$(jq -r '.functions["slot-materialiser"]' build/manifest.json)"
+          --param "ReminderCodeS3Key=$(jq -r '.functions.reminder' build/manifest.json)"
+          --param "NoShowCodeS3Key=$(jq -r '.functions["no-show"]' build/manifest.json)"
 
   migrate-db:
     name: Database Migrations

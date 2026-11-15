@@ -37,8 +37,16 @@ FUNCTIONS = {
     "slot-lookup": "slot_lookup",
     "slot-materialiser": "slot_materialiser",
     "db-migrate": "db_migrate",
+    "booking": "booking",
+    "cancel": "cancel",
+    "refund-history": "refund_history",
+    "outcome": "outcome",
+    "slot-cancel": "slot_cancel",
+    "notification": "notification",
+    "reminder": "reminder",
+    "no-show": "no_show",
 }
-NO_DATABASE = {"authorizer"}
+NO_DATABASE = {"authorizer", "notification"}
 PLATFORMS = ["manylinux2014_x86_64", "manylinux_2_28_x86_64", "manylinux_2_34_x86_64"]
 FIXED_TIME = (1980, 1, 1, 0, 0, 0)
 

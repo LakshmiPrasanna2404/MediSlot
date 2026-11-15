@@ -90,6 +90,10 @@ AVAILABILITY_REPLACE = _object(
 )
 BLACKOUT_CREATE = _object({"date": DATE, "reason": STRING}, ["date"])
 
+BOOKING = _object({"slot_id": {"type": "string", "minLength": 1, "maxLength": 120}}, ["slot_id"])
+OUTCOME = _object({"outcome": {"type": "string", "enum": ["COMPLETED", "NO_SHOW"]}}, ["outcome"])
+SLOT_CANCEL = _object({"reason": {"type": "string", "maxLength": 255}})
+
 # Route key ('METHOD /path' as API Gateway names the route) -> body schema.
 ROUTE_BODIES = {
     "POST /auth/doctors/register": DOCTOR_REGISTRATION,
@@ -105,6 +109,9 @@ ROUTE_BODIES = {
     "PUT /doctors/me/availability": AVAILABILITY_REPLACE,
     "POST /doctors/me/blackouts": BLACKOUT_CREATE,
     "PUT /patients/me": PATIENT_PROFILE_UPDATE,
+    "POST /appointments": BOOKING,
+    "POST /doctors/me/appointments/{appointmentId}/outcome": OUTCOME,
+    "POST /doctors/me/slots/{slotId}/cancel": SLOT_CANCEL,
 }
 
 _TYPE_NAMES = {

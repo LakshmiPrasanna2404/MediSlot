@@ -141,6 +141,12 @@ Resources:
                   - dynamodb:DeleteItem
                 Resource:
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-active-tokens
+              - Sid: SubscribeToNotifications
+                Effect: Allow
+                Action:
+                  - sns:Subscribe
+                Resource:
+                  - !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-notifications
 
   # M3 - Doctor Profile Lambda
   DoctorProfileRole:
@@ -414,12 +420,12 @@ Resources:
         - !Ref LambdaBasePolicy
         - !Ref DatabaseAccessPolicy
 
-  # M5 - Booking Lambda (planned)
+  # M5 - Booking Lambda
   BookingRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub medislot-${Environment}-booking-role
-      Description: 'Booking Lambda (planned)'
+      Description: 'Booking Lambda'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -490,12 +496,12 @@ Resources:
                   StringEquals:
                     iam:PassedToService: scheduler.amazonaws.com
 
-  # M5 - Cancel and refund Lambda (planned)
+  # M5 - Cancel and refund Lambda
   CancelRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub medislot-${Environment}-cancel-role
-      Description: 'Cancel and refund Lambda (planned)'
+      Description: 'Cancel and refund Lambda'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -538,12 +544,12 @@ Resources:
                 Resource:
                   - !Sub arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/default/medislot-${Environment}-*
 
-  # M5 - Refund History Lambda (planned)
+  # M5 - Refund History Lambda
   RefundHistoryRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub medislot-${Environment}-refund-history-role
-      Description: 'Refund History Lambda (planned)'
+      Description: 'Refund History Lambda'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -555,12 +561,12 @@ Resources:
         - !Ref LambdaBasePolicy
         - !Ref DatabaseAccessPolicy
 
-  # M5 - Outcome Lambda: COMPLETED or NO_SHOW (planned)
+  # M5 - Outcome Lambda: COMPLETED or NO_SHOW
   OutcomeRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub medislot-${Environment}-outcome-role
-      Description: 'Outcome Lambda: COMPLETED or NO_SHOW (planned)'
+      Description: 'Outcome Lambda: COMPLETED or NO_SHOW'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -583,12 +589,12 @@ Resources:
                 Resource:
                   - !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/medislot-${Environment}-events
 
-  # M5 - Slot Cancel Lambda: starts the slot-cancel workflow (planned)
+  # M5 - Slot Cancel Lambda: closes the slot, starts and runs the slot-cancel workflow
   SlotCancelRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub medislot-${Environment}-slot-cancel-role
-      Description: 'Slot Cancel Lambda: starts the slot-cancel workflow (planned)'
+      Description: 'Slot Cancel Lambda: closes the slot, starts and runs the slot-cancel workflow'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -611,12 +617,67 @@ Resources:
                   - dynamodb:UpdateItem
                 Resource:
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-doctor-slots
+              - Sid: SeatItems
+                Effect: Allow
+                Action:
+                  - dynamodb:GetItem
+                  - dynamodb:DeleteItem
+                Resource:
+                  - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-seats
               - Sid: StartWorkflow
                 Effect: Allow
                 Action:
                   - states:StartExecution
                 Resource:
                   - !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:medislot-${Environment}-slot-cancel
+              - Sid: ReadWorkflowRun
+                Effect: Allow
+                Action:
+                  - states:DescribeExecution
+                Resource:
+                  - !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:execution:medislot-${Environment}-slot-cancel:*
+              - Sid: PublishEvents
+                Effect: Allow
+                Action:
+                  - events:PutEvents
+                Resource:
+                  - !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/medislot-${Environment}-events
+              - Sid: ReminderSchedules
+                Effect: Allow
+                Action:
+                  - scheduler:DeleteSchedule
+                Resource:
+                  - !Sub arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/default/medislot-${Environment}-*
+
+  # M5 - Step Functions runs the slot-cancel workflow with this role: every
+  # step is the Slot Cancel Lambda.
+  SlotCancelWorkflowRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub medislot-${Environment}-slot-cancel-workflow-role
+      Description: 'Slot cancel workflow (Step Functions): invokes the Slot Cancel Lambda'
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: states.amazonaws.com
+            Action: sts:AssumeRole
+            Condition:
+              StringEquals:
+                aws:SourceAccount: !Ref AWS::AccountId
+      Policies:
+        - PolicyName: slot-cancel-workflow-permissions
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: InvokeSteps
+                Effect: Allow
+                Action:
+                  - lambda:InvokeFunction
+                Resource:
+                  - !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:medislot-${Environment}-slot-cancel
+                  - !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:medislot-${Environment}-slot-cancel:*
 
   # M6 - Reschedule Starter Lambda (planned)
   RescheduleStarterRole:
@@ -772,12 +833,12 @@ Resources:
                   StringEquals:
                     iam:PassedToService: scheduler.amazonaws.com
 
-  # M6 - Notification Lambda: exactly-once SNS dispatch (planned)
+  # M5 - Notification Lambda: exactly-once SNS dispatch
   NotificationRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub medislot-${Environment}-notification-role
-      Description: 'Notification Lambda: exactly-once SNS dispatch (planned)'
+      Description: 'Notification Lambda: exactly-once SNS dispatch'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -787,7 +848,6 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - !Ref LambdaBasePolicy
-        - !Ref DatabaseAccessPolicy
       Policies:
         - PolicyName: notification-permissions
           PolicyDocument:
@@ -857,12 +917,12 @@ Resources:
                 Resource:
                   - !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/medislot-${Environment}-events
 
-  # M6 - Reminder job (planned)
+  # M5 - Reminder job
   ReminderRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub medislot-${Environment}-reminder-role
-      Description: 'Reminder job (planned)'
+      Description: 'Reminder job'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -883,6 +943,7 @@ Resources:
                 Action:
                   - dynamodb:GetItem
                   - dynamodb:PutItem
+                  - dynamodb:DeleteItem
                 Resource:
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-dispatch-log
               - Sid: Publish
@@ -892,12 +953,12 @@ Resources:
                 Resource:
                   - !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-*
 
-  # M6 - No-show job (planned)
+  # M5 - No-show job
   NoShowRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub medislot-${Environment}-no-show-role
-      Description: 'No-show job (planned)'
+      Description: 'No-show job'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -1063,7 +1124,7 @@ Resources:
             - W3037
     Properties:
       RoleName: !Sub medislot-${Environment}-cloudformation-execution-role
-      Description: Service role CloudFormation uses for the MediSlot config, auth, app, jobs, monitoring, dashboard and api stacks
+      Description: Service role CloudFormation uses for the MediSlot events, auth, app, jobs, monitoring, dashboard and api stacks
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -1115,6 +1176,7 @@ Resources:
                       - ec2.amazonaws.com
                       - scheduler.amazonaws.com
                       - apigateway.amazonaws.com
+                      - states.amazonaws.com
               - Sid: ReadMediSlotRoles
                 Effect: Allow
                 Action:
@@ -1241,12 +1303,47 @@ Resources:
                 Resource:
                   - !Sub arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/*/medislot-${Environment}-*
                   - !Sub arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule-group/*
-              - Sid: AlarmTopic
+              - Sid: StepFunctions
+                Effect: Allow
+                Action:
+                  - states:CreateStateMachine
+                  - states:UpdateStateMachine
+                  - states:DeleteStateMachine
+                  - states:DescribeStateMachine
+                  - states:ListStateMachineVersions
+                  - states:TagResource
+                  - states:UntagResource
+                  - states:ListTagsForResource
+                Resource:
+                  - !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:medislot-${Environment}-*
+              - Sid: EventBridge
+                Effect: Allow
+                Action:
+                  - events:CreateEventBus
+                  - events:UpdateEventBus
+                  - events:DeleteEventBus
+                  - events:DescribeEventBus
+                  - events:PutRule
+                  - events:DeleteRule
+                  - events:DescribeRule
+                  - events:EnableRule
+                  - events:DisableRule
+                  - events:PutTargets
+                  - events:RemoveTargets
+                  - events:ListTargetsByRule
+                  - events:TagResource
+                  - events:UntagResource
+                  - events:ListTagsForResource
+                Resource:
+                  - !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/medislot-${Environment}-*
+                  - !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/medislot-${Environment}-*
+              - Sid: Topics
                 Effect: Allow
                 Action:
                   - sns:CreateTopic
                   - sns:DeleteTopic
                   - sns:SetTopicAttributes
+                  - sns:PutDataProtectionPolicy
                   - sns:Subscribe
                   - sns:Unsubscribe
                   - sns:TagResource
@@ -1338,6 +1435,10 @@ Outputs:
     Value: !GetAtt SlotCancelRole.Arn
     Export:
       Name: !Sub medislot-${Environment}-slot-cancel-role-arn
+  SlotCancelWorkflowRoleArn:
+    Value: !GetAtt SlotCancelWorkflowRole.Arn
+    Export:
+      Name: !Sub medislot-${Environment}-slot-cancel-workflow-role-arn
   RescheduleStarterRoleArn:
     Value: !GetAtt RescheduleStarterRole.Arn
     Export:

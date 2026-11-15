@@ -56,18 +56,28 @@
         <button type="submit" class="button">Show</button>
       </form>
     </div>
-    <div class="note">{{ icon('info') }}<span>Times are in the doctor's time zone ({{ timezone }}). Online booking opens in the next release.</span></div>
+    <div class="note">{{ icon('info') }}<span>Times are in the doctor's time zone ({{ timezone }}). Choose a time to book it.</span></div>
     {% for day, day_slots in slots_by_day.items() %}
       {% set open_count = day_slots|selectattr('free_seats')|list|length %}
       <h3 class="day-label">{{ day|long_date }} <small>{{ open_count }} open</small></h3>
       <div class="slot-grid">
         {% for s in day_slots %}
-          <div class="slot {{ 'full' if s.free_seats == 0 }}">
+          {% if s.free_seats == 0 %}
+          <div class="slot full">
             <span class="slot-time">{{ s.local_start|local_time }}</span>
             <span class="slot-type">{{ s.consultation_type_name }}</span>
             <span class="slot-fee">{{ s.fee|money }}</span>
-            <span class="slot-seats">{% if s.free_seats == 0 %}Full{% else %}{{ s.free_seats }} of {{ s.capacity }} free{% endif %}</span>
+            <span class="slot-seats">Full</span>
           </div>
+          {% else %}
+          <a class="slot bookable" href="{{ url_for('patient.book', slot_id=s.slot_id) }}"
+             aria-label="Book {{ s.consultation_type_name }} at {{ s.local_start|local_time }}, {{ day|long_date }}">
+            <span class="slot-time">{{ s.local_start|local_time }}</span>
+            <span class="slot-type">{{ s.consultation_type_name }}</span>
+            <span class="slot-fee">{{ s.fee|money }}</span>
+            <span class="slot-seats">{{ s.free_seats }} of {{ s.capacity }} free</span>
+          </a>
+          {% endif %}
         {% endfor %}
       </div>
     {% else %}

@@ -1,6 +1,8 @@
-"""Doctor dashboard (/doctor/*): schedule, profile, consultation types, availability, blackouts."""
+"""Doctor dashboard (/doctor/*): schedule with outcomes and slot cancellation, profile,
+consultation types, availability, blackouts."""
 
-from datetime import date
+from datetime import UTC, date, datetime
+from urllib.parse import quote
 
 from flask import Blueprint, flash, jsonify, redirect, render_template, request, url_for
 
@@ -42,7 +44,53 @@ def schedule():
     except ApiError as exc:
         flash(exc.message, "error")
         data = {"days": [], "view": params["view"], "timezone": "", "from": date.today().isoformat()}
-    return render_template("doctor/schedule.html", data=data, view=params["view"])
+    now_utc = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
+    return render_template("doctor/schedule.html", data=data, view=params["view"], now_utc=now_utc)
+
+
+def _back_to_schedule():
+    params = {"view": request.form.get("view", "day")}
+    if request.form.get("date"):
+        params["date"] = request.form["date"]
+    return redirect(url_for("doctor.schedule", **params))
+
+
+OUTCOME_MESSAGES = {
+    "COMPLETED": "Marked as completed.",
+    "NO_SHOW": "Marked as a no-show. The patient is told by email; no refund is made.",
+}
+
+
+@bp.post("/appointments/<appointment_id>/outcome")
+@role_required("doctor")
+def outcome(appointment_id):
+    choice = request.form.get("outcome", "")
+    try:
+        api_client.call("POST", f"/doctors/me/appointments/{appointment_id}/outcome", {"outcome": choice})
+        flash(OUTCOME_MESSAGES.get(choice, "Outcome saved."), "success")
+    except ApiError as exc:
+        flash(exc.message, "error")
+    return _back_to_schedule()
+
+
+@bp.post("/slots/cancel")
+@role_required("doctor")
+def cancel_slot():
+    slot_id = request.form.get("slot_id", "")
+    reason = request.form.get("reason", "").strip()
+    try:
+        result = api_client.call("POST", f"/doctors/me/slots/{quote(slot_id, safe='')}/cancel",
+                                 {"reason": reason} if reason else {})
+    except ApiError as exc:
+        flash(exc.message, "error")
+        return _back_to_schedule()
+    count = result.get("appointments_to_cancel", 0)
+    if count:
+        flash(f"Slot cancelled. {count} booked patient{'s are' if count != 1 else ' is'} being refunded in full "
+              "and told by email.", "success")
+    else:
+        flash("Slot cancelled. Nobody had booked it.", "success")
+    return _back_to_schedule()
 
 
 @bp.route("/profile", methods=["GET", "POST"])

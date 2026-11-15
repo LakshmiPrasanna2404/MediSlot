@@ -1,0 +1,55 @@
+{% extends "base.html" %}
+{% block title %}Refunds · MediSlot{% endblock %}
+{% block content %}
+<div class="page-head">
+  <div>
+    <h1>Refunds</h1>
+    <p>Every cancelled or missed appointment, with what came back and what was kept.</p>
+  </div>
+</div>
+
+{% set totals = data.get('totals', {}) %}
+<div class="totals" role="group" aria-label="Totals">
+  <div class="total"><span>Refunded</span><b class="num">{{ totals.get('refunded', 0)|money }}</b></div>
+  <div class="total"><span>Kept as cancellation fees</span><b class="num">{{ totals.get('deducted', 0)|money }}</b></div>
+  <div class="total"><span>Refund records</span><b class="num">{{ totals.get('refunds', 0) }}</b></div>
+</div>
+
+<section class="card">
+  {% if data.refunds %}
+    <table class="table stack refund-table">
+      <thead>
+        <tr><th>Appointment</th><th>Why</th><th class="num-col">Fee</th><th class="num-col">Refund</th><th class="num-col">Kept</th></tr>
+      </thead>
+      <tbody>
+      {% for r in data.refunds %}
+        {% set a = r.appointment or {} %}
+        <tr>
+          <td data-label="Appointment">
+            {% if a %}<span class="item-title">{{ a.consultation_type_name }} with Dr. {{ a.doctor|person_name }}</span>
+            <span class="time-end">{{ a.local_start|long_date }}, {{ a.local_start|local_time }}</span>
+            {% else %}<span class="muted">Appointment {{ r.appointment_id[:8] }}</span>{% endif %}
+          </td>
+          <td data-label="Why">{{ r.reason|refund_reason }}<span class="time-end">{{ r.created_at|local_datetime }} UTC</span></td>
+          <td data-label="Fee" class="num-col num">{{ r.base_fee_amount|money }}</td>
+          <td data-label="Refund" class="num-col num"><strong>{{ r.refund_amount|money }}</strong> <span class="chip tier-{{ r.tier|lower }}">{{ r.refund_percent }}%</span></td>
+          <td data-label="Kept" class="num-col num">{{ r.cancellation_fee_amount|money }}</td>
+        </tr>
+      {% endfor %}
+      </tbody>
+    </table>
+    {% if data.page > 1 or data.has_more %}
+      <nav class="pager" aria-label="Pages">
+        {% if data.page > 1 %}<a class="button ghost small" href="{{ url_for('patient.refunds', page=data.page - 1) }}">{{ icon('arrow-left', 16) }}Newer</a>{% endif %}
+        <span class="muted">Page {{ data.page }}</span>
+        {% if data.has_more %}<a class="button ghost small" href="{{ url_for('patient.refunds', page=data.page + 1) }}">Older{{ icon('chevron-right', 16) }}</a>{% endif %}
+      </nav>
+    {% endif %}
+  {% else %}
+    <div class="empty">
+      {{ icon('receipt', 24) }}
+      <p><strong>No refunds yet.</strong> When you cancel an appointment, or a doctor cancels one, the refund shows up here.</p>
+    </div>
+  {% endif %}
+</section>
+{% endblock %}

@@ -121,7 +121,35 @@ ICONS = {
         '<path d="M12 9v4.5M12 17v.3"/>'
     ),
     "info": Markup('<circle cx="12" cy="12" r="9"/><path d="M12 16.5v-5M12 7.8v.3"/>'),
+    "calendar-check": Markup(
+        '<rect x="3" y="4.5" width="18" height="17" rx="2"/><path d="M16 2.5v4M8 2.5v4M3 10h18M8.8 15.5l2.3 2.3 4.4-4.6"/>'
+    ),
+    "receipt": Markup(
+        '<path d="M5 2.5h14v19l-2.4-1.6-2.3 1.6-2.3-1.6-2.3 1.6-2.3-1.6L5 21.5Z"/><path d="M9 7.5h6M9 11.5h6M9 15.5h3.5"/>'
+    ),
+    "x-circle": Markup('<circle cx="12" cy="12" r="9"/><path d="m9 9 6 6M15 9l-6 6"/>'),
+    "user-x": Markup('<circle cx="9" cy="8" r="4"/><path d="M2 21a7 7 0 0 1 14 0M17 8l4 4M21 8l-4 4"/>'),
 }
+
+STATUS_LABELS = {
+    "OPEN": "Open",
+    "FULL": "Full",
+    "CANCELLED": "Cancelled",
+    "CONFIRMED": "Confirmed",
+    "COMPLETED": "Completed",
+    "NO_SHOW": "No-show",
+    "CANCELLED_BY_PATIENT": "Cancelled by patient",
+    "CANCELLED_BY_DOCTOR": "Cancelled by doctor",
+}
+REFUND_REASONS = {"PATIENT_CANCEL": "You cancelled", "DOCTOR_CANCEL": "Doctor cancelled", "NO_SHOW": "Missed"}
+
+
+def status_label(value):
+    return STATUS_LABELS.get(str(value or "").upper(), str(value or "").replace("_", " ").capitalize())
+
+
+def refund_reason(value):
+    return REFUND_REASONS.get(str(value or ""), str(value or ""))
 
 _SVG = Markup(
     '<svg class="icon {cls}" width="{size}" height="{size}" viewBox="0 0 24 24" fill="none" stroke="currentColor" '
@@ -136,7 +164,8 @@ def icon(name, size=18, cls=""):
 
 def register(app):
     app.jinja_env.filters.update(local_time=local_time, local_datetime=local_datetime, long_date=long_date, money=money,
-                                 initials=initials, person_name=person_name)
+                                 initials=initials, person_name=person_name, status_label=status_label,
+                                 refund_reason=refund_reason)
     app.jinja_env.globals.update(
         DAYS=DAYS, SPECIALISATIONS=SPECIALISATIONS, TIMEZONES=TIMEZONES, CONSULTATION_TYPES=CONSULTATION_TYPES, icon=icon
     )

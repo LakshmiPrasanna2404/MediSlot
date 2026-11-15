@@ -155,6 +155,56 @@ Resources:
         Fn::Sub: medislot-${Environment}-slot-lookup-function-arn
       PayloadFormatVersion: '2.0'
 
+  BookingIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      Description: Booking Lambda (book, list and read appointments)
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !ImportValue
+        Fn::Sub: medislot-${Environment}-booking-function-arn
+      PayloadFormatVersion: '2.0'
+
+  CancelIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      Description: Cancel Lambda (patient cancellation and refund)
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !ImportValue
+        Fn::Sub: medislot-${Environment}-cancel-function-arn
+      PayloadFormatVersion: '2.0'
+
+  RefundHistoryIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      Description: Refund History Lambda
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !ImportValue
+        Fn::Sub: medislot-${Environment}-refund-history-function-arn
+      PayloadFormatVersion: '2.0'
+
+  OutcomeIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      Description: Outcome Lambda (COMPLETED or NO_SHOW)
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !ImportValue
+        Fn::Sub: medislot-${Environment}-outcome-function-arn
+      PayloadFormatVersion: '2.0'
+
+  SlotCancelIntegration:
+    Type: AWS::ApiGatewayV2::Integration
+    Properties:
+      ApiId: !Ref HttpApi
+      Description: Slot Cancel Lambda (starts the slot-cancel workflow)
+      IntegrationType: AWS_PROXY
+      IntegrationUri: !ImportValue
+        Fn::Sub: medislot-${Environment}-slot-cancel-function-arn
+      PayloadFormatVersion: '2.0'
+
   # ---------------------------------------------------------------------------
   # Routes. NONE: public. CUSTOM: through the JWT Lambda authorizer.
   # ---------------------------------------------------------------------------
@@ -413,6 +463,76 @@ Resources:
       AuthorizerId: !Ref JwtAuthorizer
       Target: !Sub integrations/${SlotLookupIntegration}
 
+  # Book a seat in a slot (Idempotency-Key header)
+  BookAppointmentRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'POST /appointments'
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref JwtAuthorizer
+      Target: !Sub integrations/${BookingIntegration}
+
+  # The calling patient's appointments (upcoming, past or all)
+  ListAppointmentsRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'GET /appointments'
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref JwtAuthorizer
+      Target: !Sub integrations/${BookingIntegration}
+
+  # One of the calling patient's appointments
+  GetAppointmentRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'GET /appointments/{appointmentId}'
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref JwtAuthorizer
+      Target: !Sub integrations/${BookingIntegration}
+
+  # Cancel an appointment (refund by tier)
+  CancelAppointmentRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'DELETE /appointments/{appointmentId}'
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref JwtAuthorizer
+      Target: !Sub integrations/${CancelIntegration}
+
+  # The calling patient's refund history
+  RefundHistoryRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'GET /patients/me/refunds'
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref JwtAuthorizer
+      Target: !Sub integrations/${RefundHistoryIntegration}
+
+  # Mark an appointment COMPLETED or NO_SHOW
+  RecordOutcomeRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'POST /doctors/me/appointments/{appointmentId}/outcome'
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref JwtAuthorizer
+      Target: !Sub integrations/${OutcomeIntegration}
+
+  # Cancel a slot (every booking refunded in full)
+  CancelSlotRoute:
+    Type: AWS::ApiGatewayV2::Route
+    Properties:
+      ApiId: !Ref HttpApi
+      RouteKey: 'POST /doctors/me/slots/{slotId}/cancel'
+      AuthorizationType: CUSTOM
+      AuthorizerId: !Ref JwtAuthorizer
+      Target: !Sub integrations/${SlotCancelIntegration}
+
   # ---------------------------------------------------------------------------
   # Stage and access logs
   # ---------------------------------------------------------------------------
@@ -556,6 +676,51 @@ Resources:
     Properties:
       FunctionName: !ImportValue
         Fn::Sub: medislot-${Environment}-slot-lookup-function-arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*
+
+  BookingInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !ImportValue
+        Fn::Sub: medislot-${Environment}-booking-function-arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*
+
+  CancelInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !ImportValue
+        Fn::Sub: medislot-${Environment}-cancel-function-arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*
+
+  RefundHistoryInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !ImportValue
+        Fn::Sub: medislot-${Environment}-refund-history-function-arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*
+
+  OutcomeInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !ImportValue
+        Fn::Sub: medislot-${Environment}-outcome-function-arn
+      Action: lambda:InvokeFunction
+      Principal: apigateway.amazonaws.com
+      SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*
+
+  SlotCancelInvokePermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !ImportValue
+        Fn::Sub: medislot-${Environment}-slot-cancel-function-arn
       Action: lambda:InvokeFunction
       Principal: apigateway.amazonaws.com
       SourceArn: !Sub arn:${AWS::Partition}:execute-api:${AWS::Region}:${AWS::AccountId}:${HttpApi}/*

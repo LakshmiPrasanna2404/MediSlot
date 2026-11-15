@@ -100,24 +100,30 @@ Parameters:
 
   EnableSNSEndpoint:
     Type: String
-    Description: SNS interface endpoint for notification publishing (needed from Milestone 6).
-    Default: 'false'
+    Description: >-
+      SNS interface endpoint (Milestone 5). The Auth Lambda subscribes new accounts
+      to the notifications topic and the Reminder job publishes to it.
+    Default: 'true'
     AllowedValues:
       - 'true'
       - 'false'
 
   EnableEventBridgeEndpoint:
     Type: String
-    Description: EventBridge interface endpoint for domain event publishing (needed from Milestone 5).
-    Default: 'false'
+    Description: >-
+      EventBridge interface endpoint (Milestone 5). Booking, Cancel, Outcome, Slot
+      Cancel and the No-show job publish domain events.
+    Default: 'true'
     AllowedValues:
       - 'true'
       - 'false'
 
   EnableStepFunctionsEndpoint:
     Type: String
-    Description: Step Functions interface endpoint for starting the reschedule saga (needed from Milestone 6).
-    Default: 'false'
+    Description: >-
+      Step Functions interface endpoint (Milestone 5). The Slot Cancel Lambda starts
+      the slot-cancel workflow; the reschedule saga uses it from Milestone 6.
+    Default: 'true'
     AllowedValues:
       - 'true'
       - 'false'
@@ -153,9 +159,9 @@ Parameters:
   EnableSchedulerEndpoint:
     Type: String
     Description: >-
-      EventBridge Scheduler interface endpoint. Only needed if Lambdas create or delete
-      schedules at runtime. Not needed for the recurring sweepers.
-    Default: 'false'
+      EventBridge Scheduler interface endpoint (Milestone 5). Booking creates the
+      one-time reminder and no-show schedules; Cancel and Slot Cancel delete them.
+    Default: 'true'
     AllowedValues:
       - 'true'
       - 'false'
