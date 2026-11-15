@@ -81,12 +81,30 @@ def install_requirements(requirements, target):
     subprocess.run(command, check=True)  # noqa: S603 - fixed pip command, no user input
 
 
+def check_requirements(name, folder, requirements, stage):
+    """Stop the build when a function's dependencies would be missing from its zip.
+
+    A missing requirements.txt otherwise builds a package that fails at its
+    first request with "No module named ...".
+    """
+    if not requirements.exists():
+        if name in NO_DATABASE:
+            return
+        raise SystemExit(f"lambda/{folder}/requirements.txt is missing; the {name} package would have no dependencies")
+    installed = {path.name.split("-")[0].lower().replace("_", "-") for path in stage.glob("*.dist-info")}
+    for line in requirements.read_text().splitlines():
+        package = line.split("#")[0].split("==")[0].strip().lower().replace("_", "-")
+        if package and package not in installed:
+            raise SystemExit(f"{package} from lambda/{folder}/requirements.txt was not installed into the {name} package")
+
+
 def build_function(name, folder, ca_bundle):
     stage = BUILD / "lambda" / name
     shutil.rmtree(stage, ignore_errors=True)
     stage.mkdir(parents=True)
     source = ROOT / "lambda" / folder
     install_requirements(source / "requirements.txt", stage)
+    check_requirements(name, folder, source / "requirements.txt", stage)
     for path in source.glob("*.py"):
         shutil.copy2(path, stage / path.name)
     shutil.copytree(ROOT / "lambda" / "shared" / "medislot_common", stage / "medislot_common",
