@@ -1074,7 +1074,9 @@ Resources:
                       MaxAttempts: 4
                       BackoffRate: 2
                   End: true
-            ResultPath: null
+            # Keep the input (slotId, doctorId, reason); the round's results go beside it.
+            # (CloudFormation does not allow null, so ResultPath cannot discard them.)
+            ResultPath: $.cancelled
             Next: ListAppointments
           Finish:
             Type: Task
