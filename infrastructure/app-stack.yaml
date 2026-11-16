@@ -163,19 +163,6 @@ Parameters:
     MaxValue: 100
     Description: Refund percentage when the doctor cancels a slot.
 
-  ReminderOffsetsHours:
-    Type: String
-    Default: '24,2'
-    AllowedPattern: '^[0-9]+(,[0-9]+)*$'
-    Description: Hours before the start at which reminder emails are sent (one schedule each).
-
-  NoShowGraceMinutes:
-    Type: Number
-    Default: 30
-    MinValue: 0
-    MaxValue: 240
-    Description: Minutes after the slot end before an unmarked appointment becomes NO_SHOW. Keep equal to NoShowGraceMinutes in the jobs stack.
-
   RefundsDefaultPageSize:
     Type: Number
     Default: 20
@@ -741,8 +728,6 @@ Resources:
           CONFIG_BOOKING_RETRY_MAX_ATTEMPTS: !Ref BookingRetryMaxAttempts
           CONFIG_BOOKING_RETRY_BASE_MS: !Ref BookingRetryBaseMs
           CONFIG_IDEMPOTENCY_TTL_HOURS: !Ref IdempotencyTtlHours
-          CONFIG_REMINDERS_OFFSETS_HOURS: !Ref ReminderOffsetsHours
-          CONFIG_NO_SHOW_GRACE_MINUTES: !Ref NoShowGraceMinutes
           SLOTS_TABLE: !ImportValue
             Fn::Sub: medislot-${Environment}-doctor-slots-table-name
           SEATS_TABLE: !ImportValue
@@ -751,10 +736,6 @@ Resources:
             Fn::Sub: medislot-${Environment}-idempotency-table-name
           EVENT_BUS_NAME: !ImportValue
             Fn::Sub: medislot-${Environment}-event-bus-name
-          REMINDER_FUNCTION_ARN: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:medislot-${Environment}-reminder
-          NO_SHOW_FUNCTION_ARN: !Sub arn:${AWS::Partition}:lambda:${AWS::Region}:${AWS::AccountId}:function:medislot-${Environment}-no-show
-          SCHEDULER_ROLE_ARN: !ImportValue
-            Fn::Sub: medislot-${Environment}-scheduler-invoke-role-arn
           DB_HOST: !ImportValue
             Fn::Sub: medislot-${Environment}-db-endpoint
           DB_PORT: !ImportValue
@@ -785,7 +766,7 @@ Resources:
     DependsOn: CancelLogGroup
     Properties:
       FunctionName: !Sub medislot-${Environment}-cancel
-      Description: 'Cancel: patient cancellation with the refund tier, seat released, schedules deleted'
+      Description: 'Cancel: patient cancellation with the refund tier and the seat released'
       Runtime: python3.12
       Handler: handler.lambda_handler
       Role: !ImportValue
@@ -810,15 +791,12 @@ Resources:
           ENVIRONMENT: !Ref Environment
           CONFIG_REFUNDS_TIER_HOURS: !Ref RefundTierHours
           CONFIG_REFUNDS_TIER_PERCENTS: !Ref RefundTierPercents
-          CONFIG_REMINDERS_OFFSETS_HOURS: !Ref ReminderOffsetsHours
           SLOTS_TABLE: !ImportValue
             Fn::Sub: medislot-${Environment}-doctor-slots-table-name
           SEATS_TABLE: !ImportValue
             Fn::Sub: medislot-${Environment}-seats-table-name
           EVENT_BUS_NAME: !ImportValue
             Fn::Sub: medislot-${Environment}-event-bus-name
-          SCHEDULER_ROLE_ARN: !ImportValue
-            Fn::Sub: medislot-${Environment}-scheduler-invoke-role-arn
           DB_HOST: !ImportValue
             Fn::Sub: medislot-${Environment}-db-endpoint
           DB_PORT: !ImportValue
@@ -983,15 +961,12 @@ Resources:
         Variables:
           ENVIRONMENT: !Ref Environment
           CONFIG_REFUNDS_DOCTOR_CANCEL_PERCENT: !Ref DoctorCancelRefundPercent
-          CONFIG_REMINDERS_OFFSETS_HOURS: !Ref ReminderOffsetsHours
           SLOTS_TABLE: !ImportValue
             Fn::Sub: medislot-${Environment}-doctor-slots-table-name
           SEATS_TABLE: !ImportValue
             Fn::Sub: medislot-${Environment}-seats-table-name
           EVENT_BUS_NAME: !ImportValue
             Fn::Sub: medislot-${Environment}-event-bus-name
-          SCHEDULER_ROLE_ARN: !ImportValue
-            Fn::Sub: medislot-${Environment}-scheduler-invoke-role-arn
           SLOT_CANCEL_STATE_MACHINE_ARN: !Sub arn:${AWS::Partition}:states:${AWS::Region}:${AWS::AccountId}:stateMachine:medislot-${Environment}-slot-cancel
           DB_HOST: !ImportValue
             Fn::Sub: medislot-${Environment}-db-endpoint

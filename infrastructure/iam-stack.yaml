@@ -141,12 +141,6 @@ Resources:
                   - dynamodb:DeleteItem
                 Resource:
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-active-tokens
-              - Sid: SubscribeToNotifications
-                Effect: Allow
-                Action:
-                  - sns:Subscribe
-                Resource:
-                  - !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-notifications
 
   # M3 - Doctor Profile Lambda
   DoctorProfileRole:
@@ -642,12 +636,6 @@ Resources:
                   - events:PutEvents
                 Resource:
                   - !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/medislot-${Environment}-events
-              - Sid: ReminderSchedules
-                Effect: Allow
-                Action:
-                  - scheduler:DeleteSchedule
-                Resource:
-                  - !Sub arn:${AWS::Partition}:scheduler:${AWS::Region}:${AWS::AccountId}:schedule/default/medislot-${Environment}-*
 
   # M5 - Step Functions runs the slot-cancel workflow with this role: every
   # step is the Slot Cancel Lambda.
@@ -833,12 +821,12 @@ Resources:
                   StringEquals:
                     iam:PassedToService: scheduler.amazonaws.com
 
-  # M5 - Notification Lambda: exactly-once SNS dispatch
+  # M6 - Notification Lambda: exactly-once SNS dispatch (planned)
   NotificationRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub medislot-${Environment}-notification-role
-      Description: 'Notification Lambda: exactly-once SNS dispatch'
+      Description: 'Notification Lambda: exactly-once SNS dispatch (planned)'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -848,6 +836,7 @@ Resources:
             Action: sts:AssumeRole
       ManagedPolicyArns:
         - !Ref LambdaBasePolicy
+        - !Ref DatabaseAccessPolicy
       Policies:
         - PolicyName: notification-permissions
           PolicyDocument:
@@ -917,12 +906,12 @@ Resources:
                 Resource:
                   - !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/medislot-${Environment}-events
 
-  # M5 - Reminder job
+  # M6 - Reminder job (planned)
   ReminderRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub medislot-${Environment}-reminder-role
-      Description: 'Reminder job'
+      Description: 'Reminder job (planned)'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -943,7 +932,6 @@ Resources:
                 Action:
                   - dynamodb:GetItem
                   - dynamodb:PutItem
-                  - dynamodb:DeleteItem
                 Resource:
                   - !Sub arn:${AWS::Partition}:dynamodb:${AWS::Region}:${AWS::AccountId}:table/medislot-${Environment}-dispatch-log
               - Sid: Publish
@@ -953,12 +941,12 @@ Resources:
                 Resource:
                   - !Sub arn:${AWS::Partition}:sns:${AWS::Region}:${AWS::AccountId}:medislot-${Environment}-*
 
-  # M5 - No-show job
+  # M6 - No-show job (planned)
   NoShowRole:
     Type: AWS::IAM::Role
     Properties:
       RoleName: !Sub medislot-${Environment}-no-show-role
-      Description: 'No-show job'
+      Description: 'No-show job (planned)'
       AssumeRolePolicyDocument:
         Version: '2012-10-17'
         Statement:
@@ -1337,13 +1325,12 @@ Resources:
                 Resource:
                   - !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:event-bus/medislot-${Environment}-*
                   - !Sub arn:${AWS::Partition}:events:${AWS::Region}:${AWS::AccountId}:rule/medislot-${Environment}-*
-              - Sid: Topics
+              - Sid: AlarmTopic
                 Effect: Allow
                 Action:
                   - sns:CreateTopic
                   - sns:DeleteTopic
                   - sns:SetTopicAttributes
-                  - sns:PutDataProtectionPolicy
                   - sns:Subscribe
                   - sns:Unsubscribe
                   - sns:TagResource

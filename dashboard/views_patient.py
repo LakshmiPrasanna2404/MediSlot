@@ -110,7 +110,7 @@ def book_confirm():
         return redirect(url_for("patient.search"))
     appointment = result["appointment"]
     flash(f"Booked: {appointment['consultation_type_name']} with Dr. {appointment['doctor']['first_name']} "
-          f"{appointment['doctor']['last_name']}. A confirmation email is on its way.", "success")
+          f"{appointment['doctor']['last_name']}.", "success")
     return redirect(url_for("patient.appointments", highlight=appointment["appointment_id"]))
 
 

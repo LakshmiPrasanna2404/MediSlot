@@ -1,4 +1,4 @@
-"""Appointments: seats in DynamoDB, rows in RDS, one-time job schedules.
+"""Appointments: seats in DynamoDB, rows in RDS.
 
 The contended resource is the slot item in doctor-slots (capacity, bookedCount,
 heldCount, version, status). A seat is free when status is OPEN and
@@ -17,18 +17,11 @@ bookings can never push bookedCount past capacity.
 release_seat (cancel) is the reverse transaction: delete the seat (only if it
 exists) and give the place back (bookedCount - 1, version + 1). Because the seat
 delete is conditional, running it twice gives the place back once.
-
-Reminders (24 h and 2 h before) and the no-show check (30 minutes after the
-end) are one-time EventBridge Scheduler schedules created at booking and
-deleted at cancellation, as drawn in architecture box 7. Each removes itself
-after it runs (ActionAfterCompletion DELETE).
 """
 
-import json
-import os
 import secrets
 import time
-from datetime import UTC, datetime, timedelta
+from datetime import UTC
 from zoneinfo import ZoneInfo
 
 from botocore.exceptions import ClientError
@@ -242,85 +235,3 @@ def release_seat(slot_id, patient_id):
             logs.info("seat already released", slotId=slot_id, reasons=_reasons(exc))
             return False
         raise
-
-
-# ---------------------------------------------------------------------------
-# One-time schedules (EventBridge Scheduler)
-# ---------------------------------------------------------------------------
-
-
-def reminder_hours():
-    return [int(part) for part in config.config_value("reminders/offsets-hours").split(",") if part.strip()]
-
-
-def schedule_names(appointment_id):
-    env = config.environment()
-    names = [f"medislot-{env}-rem{hours}-{appointment_id}" for hours in reminder_hours()]
-    names.append(f"medislot-{env}-noshow-{appointment_id}")
-    return names
-
-
-def schedule_jobs(appointment_id, start_utc, end_utc, now=None):
-    """Create the reminder and no-show schedules for a new appointment. Never fails the booking."""
-    reminder_arn = os.environ.get("REMINDER_FUNCTION_ARN")
-    no_show_arn = os.environ.get("NO_SHOW_FUNCTION_ARN")
-    role_arn = os.environ.get("SCHEDULER_ROLE_ARN")
-    if not (reminder_arn and no_show_arn and role_arn):
-        logs.warning("job schedules not configured; reminders and no-show check skipped")
-        return []
-    now = now or datetime.now(UTC)
-    env = config.environment()
-    wanted = [
-        (f"medislot-{env}-rem{hours}-{appointment_id}", start_utc - timedelta(hours=hours), reminder_arn,
-         {"appointmentId": appointment_id, "hoursBefore": hours})
-        for hours in reminder_hours()
-    ]
-    grace = config.config_int("no-show/grace-minutes")
-    wanted.append((f"medislot-{env}-noshow-{appointment_id}", end_utc + timedelta(minutes=grace), no_show_arn,
-                   {"appointmentId": appointment_id}))
-    created = []
-    client = config.client("scheduler")
-    for name, when, target, payload in wanted:
-        if when <= now + timedelta(minutes=1):
-            continue  # already past (a booking made less than 24 h ahead gets no 24 h reminder)
-        try:
-            client.create_schedule(
-                Name=name,
-                GroupName="default",
-                ScheduleExpression=f"at({when.astimezone(UTC).strftime('%Y-%m-%dT%H:%M:%S')})",
-                ScheduleExpressionTimezone="UTC",
-                FlexibleTimeWindow={"Mode": "OFF"},
-                ActionAfterCompletion="DELETE",
-                Target={"Arn": target, "RoleArn": role_arn, "Input": json.dumps(payload),
-                        "RetryPolicy": {"MaximumRetryAttempts": 3, "MaximumEventAgeInSeconds": 3600}},
-            )
-            created.append(name)
-        except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") == "ConflictException":
-                created.append(name)  # a retried booking: it exists already
-                continue
-            logs.metric("ScheduleFailures")
-            logs.error("job schedule not created", schedule=name, error=str(exc))
-        except Exception as exc:  # noqa: BLE001 - reminders must never block a booking
-            logs.metric("ScheduleFailures")
-            logs.error("job schedule not created", schedule=name, error=str(exc))
-    logs.info("job schedules created", appointmentId=appointment_id, schedules=created)
-    return created
-
-
-def delete_jobs(appointment_id):
-    """Remove the appointment's remaining schedules. Never fails the caller."""
-    if not os.environ.get("SCHEDULER_ROLE_ARN"):
-        return 0
-    client = config.client("scheduler")
-    removed = 0
-    for name in schedule_names(appointment_id):
-        try:
-            client.delete_schedule(Name=name, GroupName="default")
-            removed += 1
-        except ClientError as exc:
-            if exc.response.get("Error", {}).get("Code") != "ResourceNotFoundException":
-                logs.error("job schedule not deleted", schedule=name, error=str(exc))
-        except Exception as exc:  # noqa: BLE001 - a leftover schedule finds the appointment closed and does nothing
-            logs.error("job schedule not deleted", schedule=name, error=str(exc))
-    return removed

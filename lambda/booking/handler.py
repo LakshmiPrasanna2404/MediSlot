@@ -18,8 +18,8 @@ Booking, in order:
      version and seat count plus the seat item; conflicts retried with backoff);
    * the appointment row is inserted (CONFIRMED, the fee at booking time).
    If anything after the seat claim fails, the seat is given back.
-4. After commit: the reminder and no-show schedules are created and
-   AppointmentBooked is published (neither can undo the booking).
+4. After commit: AppointmentBooked is published (a failed publish never undoes
+   the booking).
 """
 
 import uuid
@@ -108,7 +108,6 @@ def _book(caller, patient, slot_id, idempotency_key):
     logs.metric("AppointmentsBooked")
     logs.info("appointment booked", appointmentId=appointment_id, slotId=slot_id, doctorId=doctor_id,
               consultationTypeId=type_id, fee=row["consultation_fee"])
-    appointments.schedule_jobs(appointment_id, start, end, now)
     events.publish((events.BOOKED, appointments.event_detail(row)))
     return 201, {"appointment": appointments.view(row)}
 

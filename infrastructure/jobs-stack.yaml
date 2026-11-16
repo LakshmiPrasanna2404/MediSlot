@@ -1,6 +1,6 @@
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  MediSlot scheduled jobs. The slot materialiser Lambda and its daily EventBridge Scheduler schedule, and the reminder and no-show Lambdas that the one-time schedules created at booking invoke. (The offer expiry job joins this stack in Milestone 6.)
+  MediSlot scheduled jobs. The slot materialiser Lambda and its daily EventBridge Scheduler schedule. (Offer expiry, reminder and no-show jobs join this stack in Milestone 6.)
 
 Parameters:
   Environment:
@@ -17,12 +17,6 @@ Parameters:
   SlotMaterialiserCodeS3Key:
     Type: String
     Description: S3 key of the slot-materialiser package (content-addressed, built by scripts/build_lambdas.py)
-  ReminderCodeS3Key:
-    Type: String
-    Description: S3 key of the reminder package (content-addressed, built by scripts/build_lambdas.py)
-  NoShowCodeS3Key:
-    Type: String
-    Description: S3 key of the no-show package (content-addressed, built by scripts/build_lambdas.py)
 
   LogRetentionDays:
     Type: Number
@@ -41,13 +35,6 @@ Parameters:
     MinValue: 1
     MaxValue: 90
     Description: Rolling window of materialised slots, in days. Keep equal to BookingWindowDays in the app stack.
-
-  NoShowGraceMinutes:
-    Type: Number
-    Default: 30
-    MinValue: 0
-    MaxValue: 240
-    Description: Minutes after the slot end before an unmarked appointment becomes NO_SHOW. Keep equal to NoShowGraceMinutes in the app stack.
 
 Resources:
   SlotMaterialiserLogGroup:
@@ -126,122 +113,6 @@ Resources:
           MaximumRetryAttempts: 3
           MaximumEventAgeInSeconds: 3600
 
-  # One-time schedules (medislot-<env>-rem<h>-<appointmentId> and
-  # medislot-<env>-noshow-<appointmentId>) are created by the Booking Lambda,
-  # deleted by Cancel and Slot Cancel, and delete themselves after they run.
-  ReminderLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-reminder
-      RetentionInDays: !Ref LogRetentionDays
-      Tags:
-        - Key: Project
-          Value: MediSlot
-        - Key: Environment
-          Value: !Ref Environment
-
-  ReminderFunction:
-    Type: AWS::Lambda::Function
-    DependsOn: ReminderLogGroup
-    Properties:
-      FunctionName: !Sub medislot-${Environment}-reminder
-      Description: 'Reminder: emails the patient before a CONFIRMED appointment (one-time schedules, 24 h and 2 h)'
-      Runtime: python3.12
-      Handler: handler.lambda_handler
-      Role: !ImportValue
-        Fn::Sub: medislot-${Environment}-reminder-role-arn
-      Timeout: 30
-      MemorySize: 256
-      Architectures: [x86_64]
-      Code:
-        S3Bucket: !Ref CodeS3Bucket
-        S3Key: !Ref ReminderCodeS3Key
-      VpcConfig:
-        SubnetIds:
-          - !ImportValue
-            Fn::Sub: medislot-${Environment}-lambda-subnet-az1-id
-          - !ImportValue
-            Fn::Sub: medislot-${Environment}-lambda-subnet-az2-id
-        SecurityGroupIds:
-          - !ImportValue
-            Fn::Sub: medislot-${Environment}-lambda-sg-id
-      Environment:
-        Variables:
-          ENVIRONMENT: !Ref Environment
-          DISPATCH_LOG_TABLE: !ImportValue
-            Fn::Sub: medislot-${Environment}-dispatch-log-table-name
-          NOTIFICATION_TOPIC_ARN: !ImportValue
-            Fn::Sub: medislot-${Environment}-notification-topic-arn
-          DB_HOST: !ImportValue
-            Fn::Sub: medislot-${Environment}-db-endpoint
-          DB_PORT: !ImportValue
-            Fn::Sub: medislot-${Environment}-db-port
-          DB_NAME: !ImportValue
-            Fn::Sub: medislot-${Environment}-db-name
-          DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/db/username
-          DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
-      Tags:
-        - Key: Project
-          Value: MediSlot
-        - Key: Environment
-          Value: !Ref Environment
-
-  NoShowLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-no-show
-      RetentionInDays: !Ref LogRetentionDays
-      Tags:
-        - Key: Project
-          Value: MediSlot
-        - Key: Environment
-          Value: !Ref Environment
-
-  NoShowFunction:
-    Type: AWS::Lambda::Function
-    DependsOn: NoShowLogGroup
-    Properties:
-      FunctionName: !Sub medislot-${Environment}-no-show
-      Description: 'No-show: marks a still CONFIRMED appointment NO_SHOW 30 minutes after it ends (one-time schedule)'
-      Runtime: python3.12
-      Handler: handler.lambda_handler
-      Role: !ImportValue
-        Fn::Sub: medislot-${Environment}-no-show-role-arn
-      Timeout: 30
-      MemorySize: 256
-      Architectures: [x86_64]
-      Code:
-        S3Bucket: !Ref CodeS3Bucket
-        S3Key: !Ref NoShowCodeS3Key
-      VpcConfig:
-        SubnetIds:
-          - !ImportValue
-            Fn::Sub: medislot-${Environment}-lambda-subnet-az1-id
-          - !ImportValue
-            Fn::Sub: medislot-${Environment}-lambda-subnet-az2-id
-        SecurityGroupIds:
-          - !ImportValue
-            Fn::Sub: medislot-${Environment}-lambda-sg-id
-      Environment:
-        Variables:
-          ENVIRONMENT: !Ref Environment
-          CONFIG_NO_SHOW_GRACE_MINUTES: !Ref NoShowGraceMinutes
-          EVENT_BUS_NAME: !ImportValue
-            Fn::Sub: medislot-${Environment}-event-bus-name
-          DB_HOST: !ImportValue
-            Fn::Sub: medislot-${Environment}-db-endpoint
-          DB_PORT: !ImportValue
-            Fn::Sub: medislot-${Environment}-db-port
-          DB_NAME: !ImportValue
-            Fn::Sub: medislot-${Environment}-db-name
-          DB_USERNAME_PARAMETER: !Sub /medislot/${Environment}/db/username
-          DB_PASSWORD_PARAMETER: !Sub /medislot/${Environment}/db/password
-      Tags:
-        - Key: Project
-          Value: MediSlot
-        - Key: Environment
-          Value: !Ref Environment
-
 Outputs:
   SlotMaterialiserFunctionArn:
     Value: !GetAtt SlotMaterialiserFunction.Arn
@@ -251,19 +122,3 @@ Outputs:
     Value: !Ref SlotMaterialiserFunction
     Export:
       Name: !Sub medislot-${Environment}-slot-materialiser-function-name
-  ReminderFunctionArn:
-    Value: !GetAtt ReminderFunction.Arn
-    Export:
-      Name: !Sub medislot-${Environment}-reminder-function-arn
-  ReminderFunctionName:
-    Value: !Ref ReminderFunction
-    Export:
-      Name: !Sub medislot-${Environment}-reminder-function-name
-  NoShowFunctionArn:
-    Value: !GetAtt NoShowFunction.Arn
-    Export:
-      Name: !Sub medislot-${Environment}-no-show-function-arn
-  NoShowFunctionName:
-    Value: !Ref NoShowFunction
-    Export:
-      Name: !Sub medislot-${Environment}-no-show-function-name

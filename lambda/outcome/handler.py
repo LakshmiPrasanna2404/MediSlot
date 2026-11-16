@@ -6,9 +6,6 @@ The doctor marks how an appointment went, once it has started. Only the
 doctor's own CONFIRMED appointments can be marked, and only once (the status
 change is conditional). NO_SHOW writes a refund_ledger row with 0% refund.
 Publishes AppointmentCompleted or AppointmentNoShow.
-
-An appointment the doctor has not marked 30 minutes after it ends is marked
-NO_SHOW by the No-show job (architecture box 7).
 """
 
 from datetime import UTC, datetime

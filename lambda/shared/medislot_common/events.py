@@ -5,7 +5,8 @@ Every event has the same envelope, which EventBridge carries as the event detail
     {"eventId", "eventType", "occurredAt", "correlationId", "data": {...}}
 
 Source is "medislot" and the detail-type is the event type, so rules can match
-on either. The Notification Lambda is the consumer in Milestone 5.
+on either. Milestone 5 only publishes; the consumers (notifications, the
+waitlist processor) arrive in Milestone 6.
 
 publish() never fails the request that calls it: the change it reports is
 already committed in the database. A failed publish is logged as an error with

@@ -7,8 +7,8 @@
    time left before the start (medislot_common.refunds); the status becomes
    CANCELLED_BY_PATIENT and one refund_ledger row is written.
 2. After commit: the seat is given back in DynamoDB (seat deleted, bookedCount
-   - 1, in one transaction), the reminder and no-show schedules are deleted,
-   and AppointmentCancelled and SlotSeatFreed are published.
+   - 1, in one transaction), and AppointmentCancelled and SlotSeatFreed are
+   published.
 
 A second cancel of the same appointment gets 409: the status change is
 conditional and the ledger has one row per appointment, so nothing is
@@ -60,7 +60,6 @@ def cancel(event):
               refundPercent=refund["refund_percent"], refundAmount=refund["refund_amount"], tier=refund["tier"])
 
     released = appointments.release_seat(row["slot_id"], row["patient_id"])
-    appointments.delete_jobs(appointment_id)
     events.publish(
         (events.CANCELLED, appointments.event_detail(
             row, cancelledBy="patient", refundPercent=refund["refund_percent"], refundAmount=refund["refund_amount"])),

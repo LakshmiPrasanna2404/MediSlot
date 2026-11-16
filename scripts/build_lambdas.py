@@ -42,11 +42,8 @@ FUNCTIONS = {
     "refund-history": "refund_history",
     "outcome": "outcome",
     "slot-cancel": "slot_cancel",
-    "notification": "notification",
-    "reminder": "reminder",
-    "no-show": "no_show",
 }
-NO_DATABASE = {"authorizer", "notification"}
+NO_DATABASE = {"authorizer"}
 PLATFORMS = ["manylinux2014_x86_64", "manylinux_2_28_x86_64", "manylinux_2_34_x86_64"]
 FIXED_TIME = (1980, 1, 1, 0, 0, 0)
 

@@ -11,15 +11,14 @@ for each step (the event then carries "workflowStep" instead of a route):
     2. list         the slot's CONFIRMED appointments (RDS).
     3. Map          for each one, at most 5 at a time, cancelAppointment:
                     CANCELLED_BY_DOCTOR, 100% refund in refund_ledger, seat
-                    given back, reminder and no-show schedules deleted,
-                    AppointmentCancelled published (the patient is notified).
+                    given back, AppointmentCancelled published.
     4. list again   catches a booking that was committing while the slot
                     closed; the loop ends when the list is empty.
-    5. finish       SlotCancelled published (the doctor is notified).
+    5. finish       SlotCancelled published.
 
 Every step can run twice without doing anything twice: the status changes are
-conditional, the ledger has one row per appointment, the seat delete is
-conditional, and the Notification Lambda sends each message once.
+conditional, the ledger has one row per appointment, and the seat delete is
+conditional.
 """
 
 import json
@@ -168,7 +167,6 @@ def cancel_appointment(event):
 
     # A retried step repeats these; each is safe to repeat.
     appointments.release_seat(row["slot_id"], row["patient_id"])
-    appointments.delete_jobs(appointment_id)
     events.publish((events.CANCELLED, appointments.event_detail(
         row, cancelledBy="doctor", reason=event.get("reason"),
         refundPercent=ledger["refund_percent"], refundAmount=ledger["refund_amount"])))

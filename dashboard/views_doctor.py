@@ -57,7 +57,7 @@ def _back_to_schedule():
 
 OUTCOME_MESSAGES = {
     "COMPLETED": "Marked as completed.",
-    "NO_SHOW": "Marked as a no-show. The patient is told by email; no refund is made.",
+    "NO_SHOW": "Marked as a no-show; no refund is made.",
 }
 
 
@@ -86,8 +86,8 @@ def cancel_slot():
         return _back_to_schedule()
     count = result.get("appointments_to_cancel", 0)
     if count:
-        flash(f"Slot cancelled. {count} booked patient{'s are' if count != 1 else ' is'} being refunded in full "
-              "and told by email.", "success")
+        flash(f"Slot cancelled. {count} booked patient{'s are' if count != 1 else ' is'} being refunded in full.",
+              "success")
     else:
         flash("Slot cancelled. Nobody had booked it.", "success")
     return _back_to_schedule()

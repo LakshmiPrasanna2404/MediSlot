@@ -100,10 +100,8 @@ Parameters:
 
   EnableSNSEndpoint:
     Type: String
-    Description: >-
-      SNS interface endpoint (Milestone 5). The Auth Lambda subscribes new accounts
-      to the notifications topic and the Reminder job publishes to it.
-    Default: 'true'
+    Description: SNS interface endpoint for notification publishing (needed from Milestone 6).
+    Default: 'false'
     AllowedValues:
       - 'true'
       - 'false'
@@ -111,8 +109,8 @@ Parameters:
   EnableEventBridgeEndpoint:
     Type: String
     Description: >-
-      EventBridge interface endpoint (Milestone 5). Booking, Cancel, Outcome, Slot
-      Cancel and the No-show job publish domain events.
+      EventBridge interface endpoint (Milestone 5). Booking, Cancel, Outcome and
+      Slot Cancel publish domain events to the MediSlot bus.
     Default: 'true'
     AllowedValues:
       - 'true'
@@ -122,7 +120,7 @@ Parameters:
     Type: String
     Description: >-
       Step Functions interface endpoint (Milestone 5). The Slot Cancel Lambda starts
-      the slot-cancel workflow; the reschedule saga uses it from Milestone 6.
+      the slot-cancel workflow and reads how its run ended.
     Default: 'true'
     AllowedValues:
       - 'true'
@@ -159,9 +157,9 @@ Parameters:
   EnableSchedulerEndpoint:
     Type: String
     Description: >-
-      EventBridge Scheduler interface endpoint (Milestone 5). Booking creates the
-      one-time reminder and no-show schedules; Cancel and Slot Cancel delete them.
-    Default: 'true'
+      EventBridge Scheduler interface endpoint. Only needed if Lambdas create or delete
+      schedules at runtime. Not needed for the recurring sweepers.
+    Default: 'false'
     AllowedValues:
       - 'true'
       - 'false'

@@ -1,10 +1,9 @@
+---
 AWSTemplateFormatVersion: '2010-09-09'
 Description: >-
-  MediSlot events and notifications (architecture box 8). The custom EventBridge
-  bus the domain Lambdas publish to, the SNS topic every account's email is
-  subscribed to (with a filter on its own userId), and the Notification Lambda
-  that a rule on the bus invokes for each domain event. Deployed after iam and
-  before auth, because the Auth Lambda subscribes new accounts to the topic.
+  MediSlot event bus (Milestone 5). The custom EventBridge bus that Booking,
+  Cancel, Outcome and Slot Cancel publish their domain events to. Nothing
+  consumes the events yet; the consumers arrive in Milestone 6.
 
 Parameters:
   Environment:
@@ -13,20 +12,6 @@ Parameters:
       - dev
       - prod
     Description: Deployment environment
-
-  CodeS3Bucket:
-    Type: String
-    Description: Artifacts bucket holding the Lambda packages
-
-  NotificationCodeS3Key:
-    Type: String
-    Description: S3 key of the notification package (content-addressed, built by scripts/build_lambdas.py)
-
-  LogRetentionDays:
-    Type: Number
-    Default: 30
-    AllowedValues: [7, 14, 30, 60, 90]
-    Description: CloudWatch log retention period
 
 Resources:
   # Every MediSlot domain event: source "medislot", detail-type = event type,
@@ -41,107 +26,6 @@ Resources:
         - Key: Environment
           Value: !Ref Environment
 
-  # Email subscriptions are made at registration (Auth Lambda) with the filter
-  # policy {"userId": ["<the account's userId>"]}; AWS sends a confirmation
-  # email first. Messages carry the recipient as the userId attribute.
-  NotificationTopic:
-    Type: AWS::SNS::Topic
-    Properties:
-      TopicName: !Sub medislot-${Environment}-notifications
-      DisplayName: MediSlot
-      Tags:
-        - Key: Project
-          Value: MediSlot
-        - Key: Environment
-          Value: !Ref Environment
-
-  NotificationLogGroup:
-    Type: AWS::Logs::LogGroup
-    Properties:
-      LogGroupName: !Sub /aws/lambda/medislot-${Environment}-notification
-      RetentionInDays: !Ref LogRetentionDays
-      Tags:
-        - Key: Project
-          Value: MediSlot
-        - Key: Environment
-          Value: !Ref Environment
-
-  # No VPC: the function reads nothing from RDS (events carry the names and
-  # times), only the dispatch-log table and the SNS topic.
-  NotificationFunction:
-    Type: AWS::Lambda::Function
-    DependsOn: NotificationLogGroup
-    Metadata:
-      checkov:
-        skip:
-          - id: CKV_AWS_117
-            comment: 'Needs no database; it calls DynamoDB and SNS over their public endpoints, so it runs outside the VPC.'
-    Properties:
-      FunctionName: !Sub medislot-${Environment}-notification
-      Description: 'Notification: one email per recipient per event through SNS, exactly once (dispatch-log)'
-      Runtime: python3.12
-      Handler: handler.lambda_handler
-      Role: !ImportValue
-        Fn::Sub: medislot-${Environment}-notification-role-arn
-      Timeout: 30
-      MemorySize: 256
-      Architectures: [x86_64]
-      Code:
-        S3Bucket: !Ref CodeS3Bucket
-        S3Key: !Ref NotificationCodeS3Key
-      Environment:
-        Variables:
-          ENVIRONMENT: !Ref Environment
-          NOTIFICATION_TOPIC_ARN: !Ref NotificationTopic
-          DISPATCH_LOG_TABLE: !ImportValue
-            Fn::Sub: medislot-${Environment}-dispatch-log-table-name
-      Tags:
-        - Key: Project
-          Value: MediSlot
-        - Key: Environment
-          Value: !Ref Environment
-
-  # EventBridge invokes the function asynchronously: two Lambda retries, and
-  # the rule's own retries (up to 24 hours) if Lambda cannot take the event.
-  NotificationInvokeConfig:
-    Type: AWS::Lambda::EventInvokeConfig
-    Properties:
-      FunctionName: !Ref NotificationFunction
-      Qualifier: $LATEST
-      MaximumRetryAttempts: 2
-      MaximumEventAgeInSeconds: 3600
-
-  NotificationRule:
-    Type: AWS::Events::Rule
-    Properties:
-      Name: !Sub medislot-${Environment}-notifications
-      Description: Domain events that someone is told about, to the Notification Lambda
-      EventBusName: !Ref EventBus
-      State: ENABLED
-      EventPattern:
-        source:
-          - medislot
-        detail-type:
-          - AppointmentBooked
-          - AppointmentCancelled
-          - AppointmentCompleted
-          - AppointmentNoShow
-          - SlotCancelled
-      Targets:
-        - Id: notification
-          Arn: !GetAtt NotificationFunction.Arn
-          RetryPolicy:
-            MaximumRetryAttempts: 8
-            MaximumEventAgeInSeconds: 3600
-
-  NotificationRulePermission:
-    Type: AWS::Lambda::Permission
-    Properties:
-      FunctionName: !Ref NotificationFunction
-      Action: lambda:InvokeFunction
-      Principal: events.amazonaws.com
-      SourceArn: !GetAtt NotificationRule.Arn
-
 Outputs:
   EventBusName:
     Value: !Ref EventBus
@@ -151,11 +35,3 @@ Outputs:
     Value: !GetAtt EventBus.Arn
     Export:
       Name: !Sub medislot-${Environment}-event-bus-arn
-  NotificationTopicArn:
-    Value: !Ref NotificationTopic
-    Export:
-      Name: !Sub medislot-${Environment}-notification-topic-arn
-  NotificationFunctionArn:
-    Value: !GetAtt NotificationFunction.Arn
-    Export:
-      Name: !Sub medislot-${Environment}-notification-function-arn

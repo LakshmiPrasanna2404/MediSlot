@@ -80,7 +80,7 @@
                     <input type="hidden" name="slot_id" value="{{ slot.slot_id }}">
                     <input type="hidden" name="date" value="{{ data.get('from', '') }}">
                     <input type="hidden" name="view" value="{{ view }}">
-                    <p>{% if booked_here %}{{ booked_here }} booked patient{{ 's' if booked_here != 1 }} will get a full refund and an email.{% else %}Nobody has booked this slot yet.{% endif %} The slot closes for booking at once.</p>
+                    <p>{% if booked_here %}{{ booked_here }} booked patient{{ 's' if booked_here != 1 }} will get a full refund.{% else %}Nobody has booked this slot yet.{% endif %} The slot closes for booking at once.</p>
                     <label><span>Reason for patients <small>(optional)</small></span>
                       <input type="text" name="reason" maxlength="255" placeholder="For example: called to an emergency">
                     </label>
