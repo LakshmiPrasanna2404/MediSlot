@@ -15,6 +15,11 @@ After every change the doctor's slots are synced straight away (same code as
 the daily materialiser), so new patterns become bookable and removed patterns
 or new blackout dates stop being bookable. A slot somebody already holds a
 seat in is never deleted; it is reported back so the doctor can cancel it.
+
+Weekly hours can only be added once the doctor's profile is complete
+(profiles.SLOT_PROFILE_FIELDS: specialisation, experience, qualifications,
+languages and the hospital's name, city and address); otherwise PUT returns
+409 with the missing fields. Saving an empty list is always allowed.
 """
 
 import uuid
@@ -101,7 +106,8 @@ def get_availability(event):
                ORDER BY ap.day_of_week, ap.start_time""",
             (doctor["doctor_id"],),
         )
-        return 200, {"timezone": doctor["timezone"], "patterns": cur.fetchall()}
+        return 200, {"timezone": doctor["timezone"], "patterns": cur.fetchall(),
+                     "missing_profile_fields": profiles.missing_profile_fields(doctor)}
 
 
 def replace_availability(event):
@@ -109,6 +115,8 @@ def replace_availability(event):
     reject_unknown(body, {"patterns"})
     with db.transaction() as cur:
         doctor = _doctor(cur, event)
+        if body.get("patterns"):
+            profiles.require_complete_profile(doctor)
         cur.execute(
             """SELECT dct.consultation_type_id, ct.duration_minutes
                FROM doctor_consultation_types dct

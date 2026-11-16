@@ -4,9 +4,12 @@
 <div class="page-head">
   <div>
     <h1>Your profile</h1>
-    <p>Patients see these details on your page when they search.</p>
+    <p>Patients see these details on your page when they search. Every field is required before your slots open for booking.</p>
   </div>
 </div>
+{% if missing %}
+<div class="note">{{ icon('alert-circle') }}<span><strong>Your slots are not open for booking yet.</strong> Fill in {{ missing|join(', ') }} and save. Your weekly hours then become bookable straight away.</span></div>
+{% endif %}
 <div class="columns">
   <section class="card side profile-card">
     {% if profile.photo_url %}
@@ -41,15 +44,15 @@
           <label>First name <input name="first_name" value="{{ profile.first_name }}" required maxlength="60" autocomplete="given-name"></label>
           <label>Last name <input name="last_name" value="{{ profile.last_name }}" required maxlength="60" autocomplete="family-name"></label>
           <label>Specialisation
-            <select name="specialisation">
+            <select name="specialisation" required>
               {% if not profile.specialisation %}<option value="">Choose…</option>{% endif %}
               {% for s in SPECIALISATIONS %}<option {{ 'selected' if profile.specialisation == s }}>{{ s }}</option>{% endfor %}
             </select></label>
-          <label>Years of experience <input type="number" name="years_experience" min="0" max="80" value="{{ profile.years_experience if profile.years_experience is not none else '' }}"></label>
-          <label>Qualifications <input name="qualifications" value="{{ profile.qualifications or '' }}" maxlength="255"></label>
-          <label>Languages spoken <input name="languages" value="{{ profile.languages or '' }}" maxlength="100"></label>
+          <label>Years of experience <input type="number" name="years_experience" min="0" max="80" value="{{ profile.years_experience if profile.years_experience is not none else '' }}" required></label>
+          <label>Qualifications <input name="qualifications" value="{{ profile.qualifications or '' }}" maxlength="255" required></label>
+          <label>Languages spoken <input name="languages" value="{{ profile.languages or '' }}" maxlength="100" required></label>
           <label>Time zone
-            <input name="timezone" list="timezones" value="{{ profile.timezone }}">
+            <input name="timezone" list="timezones" value="{{ profile.timezone }}" required>
             <datalist id="timezones">{% for tz in TIMEZONES %}<option value="{{ tz }}">{% endfor %}</datalist>
             <small>Your weekly availability is in this zone. Changing it moves your future open slots.</small></label>
         </div>
@@ -57,9 +60,9 @@
       <fieldset>
         <legend>Hospital or clinic</legend>
         <div class="form grid-2">
-          <label>Name <input name="hospital_name" value="{{ profile.hospital.name if profile.hospital else '' }}" maxlength="200"></label>
-          <label>City <input name="hospital_city" value="{{ profile.hospital.city if profile.hospital else '' }}" maxlength="100"></label>
-          <label class="span-2">Address <input name="hospital_address" value="{{ profile.hospital.address if profile.hospital and profile.hospital.address else '' }}" maxlength="255"></label>
+          <label>Name <input name="hospital_name" value="{{ profile.hospital.name if profile.hospital else '' }}" maxlength="200" required></label>
+          <label>City <input name="hospital_city" value="{{ profile.hospital.city if profile.hospital else '' }}" maxlength="100" required></label>
+          <label class="span-2">Address <input name="hospital_address" value="{{ profile.hospital.address if profile.hospital and profile.hospital.address else '' }}" maxlength="255" required></label>
         </div>
       </fieldset>
       <div class="form-foot"><button type="submit" class="button primary">Save profile</button></div>

@@ -4,7 +4,8 @@ Triggered daily by EventBridge Scheduler. Rolls the booking window forward:
 for every doctor with active weekly patterns it creates any missing slot for
 local today .. today + N - 1 (N = the BookingWindowDays parameter, 30), skips
 blackout dates, and removes future OPEN slots nobody holds a seat in that no
-longer match a pattern.
+longer match a pattern. A doctor whose profile is incomplete gets no open
+slots until it is complete (see slots.sync_from_database).
 
 Safe to run twice: the table key is (doctorId, startTime) and every create is
 a conditional put (attribute_not_exists), so a second run for the same date
@@ -41,7 +42,7 @@ def lambda_handler(event, context):
     table = config.table("SLOTS_TABLE")
 
     totals = {"doctors": 0, "created": 0, "updated": 0, "alreadyExisted": 0, "removed": 0, "keptBecauseBooked": 0,
-              "failed": []}
+              "incompleteProfiles": 0, "failed": []}
     with db.connection().cursor() as cursor:
         doctor_ids = doctors_to_process(cursor, event)
         logs.info("materialiser started", doctors=len(doctor_ids), windowDays=days, onlyDoctor=event.get("doctorId"))
@@ -58,6 +59,7 @@ def lambda_handler(event, context):
             totals["alreadyExisted"] += summary["alreadyExisted"]
             totals["removed"] += summary["removed"]
             totals["keptBecauseBooked"] += len(summary["keptBecauseBooked"])
+            totals["incompleteProfiles"] += 1 if summary.get("missingProfileFields") else 0
             logs.info("doctor slots synced", **summary)
 
     logs.metric("SlotsMaterialised", totals["created"])

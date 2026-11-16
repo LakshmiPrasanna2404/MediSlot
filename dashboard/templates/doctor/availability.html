@@ -8,7 +8,15 @@
   </div>
 </div>
 
-{% if not types %}
+{% if missing %}
+  <section class="card">
+    <div class="empty">
+      {{ icon('user', 24) }}
+      <p><strong>Complete your profile first.</strong> Patients can book you only after you fill in {{ missing|join(', ') }}.{% if data.patterns %} Your saved weekly hours are kept and open as soon as your profile is complete.{% endif %}</p>
+      <a class="button primary" href="{{ url_for('doctor.profile') }}">Complete your profile</a>
+    </div>
+  </section>
+{% elif not types %}
   <section class="card">
     <div class="empty">
       {{ icon('clipboard', 24) }}

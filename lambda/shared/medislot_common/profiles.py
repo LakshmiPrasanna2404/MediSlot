@@ -20,6 +20,18 @@ DOCTOR_PROFILE_SQL = """
 
 NAME_FIELDS = ("first_name", "last_name")
 
+# A doctor's slots open for booking only once all of these are filled in.
+# Registration may leave them empty; a profile update may not clear them.
+SLOT_PROFILE_FIELDS = {
+    "specialisation": "specialisation",
+    "years_experience": "years of experience",
+    "qualifications": "qualifications",
+    "languages": "languages spoken",
+    "hospital_name": "hospital name",
+    "hospital_city": "hospital city",
+    "hospital_address": "hospital address",
+}
+
 
 def name_values(body, required):
     """Validate first_name and last_name (each 1-60 characters) into users columns.
@@ -98,28 +110,65 @@ def find_or_create_hospital(cursor, name, address, city):
 
 
 def doctor_values(cursor, body, creating):
-    """Validate doctor profile fields and turn them into doctors-table columns."""
+    """Validate doctor profile fields and turn them into doctors-table columns.
+
+    At registration (creating=True) every detail is optional. On an update a
+    field that is sent must have a value, because the SLOT_PROFILE_FIELDS
+    cannot be cleared once set, and a hospital needs its name, city and address.
+    """
+    required = not creating
     values = {}
     if "years_experience" in body:
-        values["years_experience"] = integer(body["years_experience"], "years_experience", 0, 80)
+        values["years_experience"] = integer(body["years_experience"], "years_experience", 0, 80, required=required)
     if "qualifications" in body:
-        values["qualifications"] = text(body["qualifications"], "qualifications", 255)
+        values["qualifications"] = text(body["qualifications"], "qualifications", 255, required=required)
     if "languages" in body:
-        values["languages"] = text(body["languages"], "languages", 100)
+        values["languages"] = text(body["languages"], "languages", 100, required=required)
     if "timezone" in body:
         values["timezone"] = timezone_name(body["timezone"])
     elif creating:
         values["timezone"] = config.config_value("doctors/default-timezone")
     if "specialisation" in body:
+        if required and body["specialisation"] in (None, ""):
+            raise APIError(400, "specialisation is required")
         values["specialisation_id"] = resolve_specialisation(cursor, body["specialisation"])
     hospital_keys = {"hospital_name", "hospital_address", "hospital_city"}
     if hospital_keys & set(body):
         if not body.get("hospital_name"):
             raise APIError(400, "hospital_name is required when setting a hospital")
+        if required:
+            for key in ("hospital_city", "hospital_address"):
+                text(body.get(key), key, 255, required=True)
         values["hospital_id"] = find_or_create_hospital(
             cursor, body.get("hospital_name"), body.get("hospital_address"), body.get("hospital_city")
         )
     return values
+
+
+def missing_profile_fields(row):
+    """The SLOT_PROFILE_FIELDS still empty in a DOCTOR_PROFILE_SQL row, in form order."""
+    present = {
+        "specialisation": row["specialisation_id"],
+        "years_experience": row["years_experience"],
+        "qualifications": row["qualifications"],
+        "languages": row["languages"],
+        "hospital_name": row["hospital_name"],
+        "hospital_city": row["hospital_city"],
+        "hospital_address": row["hospital_address"],
+    }
+    return [field for field, value in present.items() if value is None or (isinstance(value, str) and not value.strip())]
+
+
+def require_complete_profile(row):
+    """409 unless the doctor has filled in every detail that opens their slots."""
+    missing = missing_profile_fields(row)
+    if missing:
+        raise APIError(
+            409,
+            "Complete your profile before adding weekly hours. Missing: "
+            + ", ".join(SLOT_PROFILE_FIELDS[field] for field in missing),
+            {"missing_profile_fields": missing},
+        )
 
 
 def patient_values(body):

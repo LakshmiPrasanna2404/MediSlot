@@ -9,6 +9,10 @@ is created at registration, so there is no separate create call.
 Changing the time zone moves every future unbooked slot to the new zone
 (slots are local-time based). It is refused while the doctor has upcoming
 confirmed appointments, because those were booked at fixed instants.
+
+The details in profiles.SLOT_PROFILE_FIELDS are required before the doctor's
+slots open for booking. They cannot be cleared once set, and the update that
+completes them syncs the slots, so saved weekly hours become bookable at once.
 """
 
 import os
@@ -58,6 +62,7 @@ def view(row):
         "languages": row["languages"],
         "timezone": row["timezone"],
         "photo_url": photo_url(row["profile_photo_s3_key"]),
+        "missing_profile_fields": profiles.missing_profile_fields(row),
         "created_at": row["created_at"],
         "updated_at": row["updated_at"],
     }
@@ -107,16 +112,20 @@ def update_profile(event):
 
     logs.info("doctor profile updated", doctorId=current["doctor_id"], fields=sorted(body))
     result = {}
-    if timezone_changed:
-        with db.connection().cursor() as cur:
+    with db.connection().cursor() as cur:
+        updated = profiles.require_doctor(cur, caller.user_id)
+        completed = bool(profiles.missing_profile_fields(current)) and not profiles.missing_profile_fields(updated)
+        if timezone_changed or completed:
             result["slot_sync"] = slots.sync_from_database(
                 cur, config.table("SLOTS_TABLE"), current["doctor_id"], slots.now_utc(),
                 config.config_int("slots/booking-window-days"),
             )
+    if timezone_changed:
         logs.info("doctor time zone changed", doctorId=current["doctor_id"], fromTimezone=current["timezone"],
                   toTimezone=values["timezone"], slotSync=result["slot_sync"])
-    with db.connection().cursor() as cur:
-        result["profile"] = view(profiles.require_doctor(cur, caller.user_id))
+    if completed:
+        logs.info("doctor profile completed; slots opened", doctorId=current["doctor_id"], slotSync=result["slot_sync"])
+    result["profile"] = view(updated)
     return 200, result
 
 

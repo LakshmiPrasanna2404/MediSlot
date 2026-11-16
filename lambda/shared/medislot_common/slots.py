@@ -34,6 +34,8 @@ from zoneinfo import ZoneInfo
 from boto3.dynamodb.conditions import Key
 from botocore.exceptions import ClientError
 
+from . import profiles
+
 UTC = UTC
 ISO_FORMAT = "%Y-%m-%dT%H:%M:%SZ"
 WRITE_WORKERS = 8
@@ -422,17 +424,22 @@ def window_dates(tz_name, now, days):
 
 
 def sync_from_database(cursor, table, doctor_id, now, days):
-    """Load the doctor's inputs from RDS and sync their slots."""
-    tz_name = cursor_timezone(cursor, doctor_id)
-    first, last = window_dates(tz_name, now, days)
-    tz_name, patterns, blackouts = load_doctor_inputs(cursor, doctor_id, first, last)
-    return sync_doctor(table, doctor_id, tz_name, patterns, blackouts, now, days)
+    """Load the doctor's inputs from RDS and sync their slots.
 
-
-def cursor_timezone(cursor, doctor_id):
-    cursor.execute("SELECT timezone FROM doctors WHERE doctor_id = %s", (doctor_id,))
-    row = cursor.fetchone()
-    if not row:
+    A doctor whose profile still misses a detail in profiles.SLOT_PROFILE_FIELDS
+    has no open slots: the sync runs as if there were no weekly patterns, so
+    future slots nobody holds a seat in are removed (booked ones are kept), and
+    the summary lists the missing fields in `missingProfileFields`.
+    """
+    doctor = profiles.doctor_by_id(cursor, doctor_id)
+    if not doctor:
         raise LookupError(f"doctor {doctor_id} not found")
-    return row["timezone"]
-
+    first, last = window_dates(doctor["timezone"], now, days)
+    tz_name, patterns, blackouts = load_doctor_inputs(cursor, doctor_id, first, last)
+    missing = profiles.missing_profile_fields(doctor)
+    if missing:
+        patterns = []
+    summary = sync_doctor(table, doctor_id, tz_name, patterns, blackouts, now, days)
+    if missing:
+        summary["missingProfileFields"] = missing
+    return summary

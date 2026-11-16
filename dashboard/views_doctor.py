@@ -14,6 +14,20 @@ from .views_auth import form_body
 bp = Blueprint("doctor", __name__, url_prefix="/doctor")
 PROFILE_FIELDS = ["first_name", "last_name", "specialisation", "hospital_name", "hospital_address", "hospital_city",
                   "years_experience", "qualifications", "languages", "timezone"]
+# The details a doctor must fill in before their slots open for booking (the API's missing_profile_fields).
+PROFILE_LABELS = {
+    "specialisation": "specialisation",
+    "years_experience": "years of experience",
+    "qualifications": "qualifications",
+    "languages": "languages spoken",
+    "hospital_name": "hospital name",
+    "hospital_city": "hospital city",
+    "hospital_address": "hospital address",
+}
+
+
+def _missing_labels(fields):
+    return [PROFILE_LABELS.get(field, field) for field in fields or []]
 
 
 def _sync_message(summary):
@@ -23,6 +37,8 @@ def _sync_message(summary):
     kept = summary.get("keptBecauseBooked") or []
     if kept:
         parts.append(f"{len(kept)} kept because patients are booked (cancel those slots separately)")
+    if summary.get("missingProfileFields"):
+        parts.append("no slots open until your profile is complete")
     return " (" + ", ".join(parts) + ")"
 
 
@@ -105,7 +121,8 @@ def profile():
         except ApiError as exc:
             flash(exc.message, "error")
     data = api_client.call("GET", "/doctors/me")
-    return render_template("doctor/profile.html", profile=data["profile"])
+    return render_template("doctor/profile.html", profile=data["profile"],
+                           missing=_missing_labels(data["profile"].get("missing_profile_fields")))
 
 
 @bp.post("/profile/photo-upload")
@@ -199,7 +216,8 @@ def availability():
             flash(exc.message, "error")
     data = api_client.call("GET", "/doctors/me/availability")
     types = [t for t in api_client.call("GET", "/doctors/me/consultation-types")["consultation_types"] if t["is_active"]]
-    return render_template("doctor/availability.html", data=data, types=types)
+    return render_template("doctor/availability.html", data=data, types=types,
+                           missing=_missing_labels(data.get("missing_profile_fields")))
 
 
 @bp.route("/blackouts", methods=["GET", "POST"])
