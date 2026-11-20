@@ -22,7 +22,9 @@
         ] %}
       {% elif session_role == 'patient' %}
         {% set links = [
-          ('patient.search', 'Find a doctor', 'search', ['patient.search', 'patient.doctor']),
+          ('patient.search', 'Find a doctor', 'search', ['patient.search', 'patient.doctor', 'patient.book']),
+          ('patient.appointments', 'My appointments', 'calendar-check', ['patient.appointments']),
+          ('patient.refunds', 'Refunds', 'receipt', ['patient.refunds']),
           ('patient.profile', 'Profile', 'user', ['patient.profile']),
         ] %}
       {% endif %}
