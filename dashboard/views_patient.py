@@ -6,7 +6,7 @@ from datetime import date, datetime, timedelta
 
 from flask import Blueprint, flash, redirect, render_template, request, url_for
 
-from . import api_client
+from . import api_client, weblog
 from .api_client import ApiError
 from .security import role_required
 from .views_auth import form_body
@@ -104,11 +104,15 @@ def book_confirm():
         result = api_client.call("POST", "/appointments", {"slot_id": slot_id},
                                  headers={"Idempotency-Key": request.form.get("idempotency_key", "")})
     except ApiError as exc:
+        weblog.warning("booking failed", slotId=slot_id, doctorId=doctor_id, apiStatus=exc.status,
+                       apiError=exc.message)
         flash(exc.message, "error")
         if doctor_id:
             return redirect(url_for("patient.doctor", doctor_id=doctor_id))
         return redirect(url_for("patient.search"))
     appointment = result["appointment"]
+    weblog.info("appointment booked", appointmentId=appointment["appointment_id"], slotId=slot_id, doctorId=doctor_id,
+                consultationTypeId=appointment.get("consultation_type_id"), fee=appointment.get("consultation_fee"))
     flash(f"Booked: {appointment['consultation_type_name']} with Dr. {appointment['doctor']['first_name']} "
           f"{appointment['doctor']['last_name']}.", "success")
     return redirect(url_for("patient.appointments", highlight=appointment["appointment_id"]))
@@ -134,14 +138,21 @@ def cancel(appointment_id):
     try:
         result = api_client.call("DELETE", f"/appointments/{appointment_id}")
     except ApiError as exc:
+        weblog.warning("cancel failed", appointmentId=appointment_id, apiStatus=exc.status, apiError=exc.message)
         flash(exc.message, "error")
         return redirect(url_for("patient.appointments"))
     refund = result.get("refund") or {}
-    amount = refund.get("refund_amount", 0)
+    amount = float(refund.get("refund_amount") or 0)
+    kept = float(refund.get("cancellation_fee_amount") or 0)
+    weblog.info("appointment cancelled", appointmentId=appointment_id, tier=refund.get("tier"),
+                refundPercent=refund.get("refund_percent"), refundAmount=amount, cancellationFee=kept)
     if amount:
-        message = f"Appointment cancelled. {refund.get('refund_percent')}% of the fee is refunded: ₹{float(amount):,.2f}."
+        message = f"Appointment cancelled. You get ₹{amount:,.2f} back ({refund.get('refund_percent')}% of the fee)."
+        if kept:
+            message += f" ₹{kept:,.2f} is kept as a cancellation fee."
     else:
-        message = "Appointment cancelled. It was too close to the start for a refund."
+        message = (f"Appointment cancelled. There is no refund because it was too close to the appointment time, "
+                   f"so the full ₹{kept:,.2f} is kept as a cancellation fee.")
     flash(message, "success")
     return redirect(url_for("patient.appointments"))
 

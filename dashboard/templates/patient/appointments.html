@@ -41,9 +41,10 @@
               <summary class="link-button danger">{{ icon('x-circle', 16) }}Cancel</summary>
               <div class="confirm-panel">
                 {% if preview.refund_amount|float > 0 %}
-                  <p>Cancel now and <strong>{{ preview.refund_amount|money }}</strong> comes back ({{ preview.refund_percent }}% of {{ preview.base_fee_amount|money }}).</p>
+                  <p>If you cancel now, you get <strong>{{ preview.refund_amount|money }}</strong> back ({{ preview.refund_percent }}% of {{ preview.base_fee_amount|money }}).
+                    {%- if preview.get('cancellation_fee_amount', 0)|float > 0 %} The other {{ preview.cancellation_fee_amount|money }} is kept as a cancellation fee.{% endif %}</p>
                 {% else %}
-                  <p>It is too close to the start for a refund. Cancel anyway?</p>
+                  <p>You won't get a refund for this one. The appointment starts too soon, so the full <strong>{{ preview.base_fee_amount|money }}</strong> is kept as a cancellation fee. Do you still want to cancel?</p>
                 {% endif %}
                 <form method="post" action="{{ url_for('patient.cancel', appointment_id=a.appointment_id) }}">
                   <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
